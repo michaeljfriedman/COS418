@@ -2,6 +2,7 @@ package cos418_hw1_1
 
 import (
 	"bufio"
+  "fmt"
 	"io"
 	"strconv"
 )
@@ -12,6 +13,11 @@ import (
 func sumWorker(nums chan int, out chan int) {
 	// TODO: implement me
 	// HINT: use for loop over `nums`
+  sum := 0
+  for num := range nums {
+    sum += num
+  }
+  out <- sum
 }
 
 // Read integers from the file `fileName` and return sum of all values.
@@ -23,7 +29,56 @@ func sum(num int, fileName string) int {
 	// TODO: implement me
 	// HINT: use `readInts` and `sumWorkers`
 	// HINT: used buffered channels for splitting numbers between workers
-	return 0
+
+  // Read nums from `fileName`
+  // TODO: implement this part with a Reader
+  ints := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
+
+  workerSize := len(ints) / num
+
+  // Create channels to communicate with workers
+  inChan := make(chan int)
+  workerChans := make([]chan int, num)
+  for i := range workerChans {
+    workerChans[i] = make(chan int, workerSize)
+  }
+
+  // Divide up work, computing the sum among `num` workers
+  for i := range workerChans {
+    go sumWorker(workerChans[i], inChan)
+  }
+
+  // Send a portion of the ints to each worker
+  startIndex := 0
+  endIndex := workerSize
+  for i := range workerChans {
+    for _, n := range ints[startIndex:endIndex] {
+      workerChans[i] <- n
+    }
+    close(workerChans[i])
+    startIndex = endIndex
+    endIndex += workerSize
+  }
+
+  // Corner case: startIndex may not have reached the end of the ints. Send
+  // any leftover ints to an extra worker.
+  if startIndex < len(ints) {
+    leftoverChan := make(chan int, workerSize)
+    go sumWorker(leftoverChan, inChan)
+
+    for _, n := range ints[startIndex:] {
+      leftoverChan <- n
+    }
+    close(leftoverChan)
+  }
+
+  // Add up sums computed by each worker
+  sum := 0
+  for i := 0; i < num; i++ {
+    sum += <-inChan
+  }
+
+  return sum
 }
 
 // Read a list of integers separated by whitespace from `r`.

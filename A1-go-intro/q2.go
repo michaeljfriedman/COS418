@@ -3,6 +3,7 @@ package cos418_hw1_1
 import (
 	"bufio"
 	"io"
+  "os"
 	"strconv"
 )
 
@@ -30,16 +31,20 @@ func sum(num int, fileName string) int {
 	// HINT: used buffered channels for splitting numbers between workers
 
   // Read nums from `fileName`
-  // TODO: implement this part with a Reader
-  ints := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-
-  workerSize := len(ints) / num
+  fileReader, err := os.Open(fileName)
+  checkError(err)
+  ints, err := readInts(fileReader)
+  checkError(err)
 
   // Create channels to communicate with workers
   inChan := make(chan int)
   workerChans := make([]chan int, num)
+  chanSize := len(ints) / num
+  if chanSize < 1 {
+    chanSize = 1
+  }
   for i := range workerChans {
-    workerChans[i] = make(chan int, workerSize)
+    workerChans[i] = make(chan int, chanSize)
   }
 
   // Divide up work, computing the sum among `num` workers
@@ -48,8 +53,8 @@ func sum(num int, fileName string) int {
   }
 
   // Distribute the ints over the workers to be summed
-  for _, n := range ints {
-    worker := n % num
+  for i, n := range ints {
+    worker := i % num
     workerChans[worker] <- n
   }
 

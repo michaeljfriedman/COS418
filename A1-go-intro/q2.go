@@ -2,7 +2,6 @@ package cos418_hw1_1
 
 import (
 	"bufio"
-  "fmt"
 	"io"
 	"strconv"
 )
@@ -48,28 +47,14 @@ func sum(num int, fileName string) int {
     go sumWorker(workerChans[i], inChan)
   }
 
-  // Send a portion of the ints to each worker
-  startIndex := 0
-  endIndex := workerSize
-  for i := range workerChans {
-    for _, n := range ints[startIndex:endIndex] {
-      workerChans[i] <- n
-    }
-    close(workerChans[i])
-    startIndex = endIndex
-    endIndex += workerSize
+  // Distribute the ints over the workers to be summed
+  for _, n := range ints {
+    worker := n % num
+    workerChans[worker] <- n
   }
 
-  // Corner case: startIndex may not have reached the end of the ints. Send
-  // any leftover ints to an extra worker.
-  if startIndex < len(ints) {
-    leftoverChan := make(chan int, workerSize)
-    go sumWorker(leftoverChan, inChan)
-
-    for _, n := range ints[startIndex:] {
-      leftoverChan <- n
-    }
-    close(leftoverChan)
+  for i := range workerChans {
+    close(workerChans[i])
   }
 
   // Add up sums computed by each worker

@@ -2,6 +2,7 @@ package mapreduce
 
 import (
 	"hash/fnv"
+	"io/ioutil"
 )
 
 // doMap does the job of a map worker: it reads one of the input files
@@ -16,15 +17,16 @@ func doMap(
 ) {
 	// TODO:
 	// You will need to write this function.
-	// You can find the filename for this map task's input to reduce task number
-	// r using reduceName(jobName, mapTaskNumber, r). The ihash function (given
-	// below doMap) should be used to decide which file a given key belongs into.
+	// The output of a map task is stored in the file system as files whose name
+	// indicates which map task produced them and which reduce task they are for.
+	// This map task should write output to a different file for each reduce task,
+	// based on the keys of the intermediate key/value pairs. You can map each key
+	// to a reduce task number r using ihash(). Then the filename to write to for
+	// the r'th reduce task can be found using
+	// reduceName(jobName, mapTaskNumber, r).
 	//
-	// The intermediate output of a map task is stored in the file
-	// system as multiple files whose name indicates which map task produced
-	// them, as well as which reduce task they are for. Coming up with a
-	// scheme for how to store the key/value pairs on disk can be tricky,
-	// especially when taking into account that both keys and values could
+	// Coming up with a scheme for how to store the key/value pairs on disk can be
+	// tricky, especially when taking into account that both keys and values could
 	// contain newlines, quotes, and any other character you can think of.
 	//
 	// One format often used for serializing data to a byte stream that the
@@ -41,6 +43,29 @@ func doMap(
 	//
 	// Remember to close the file after you have written all the values!
 	// Use checkError to handle errors.
+
+	// Read file's contents
+	contentsBytes, err := ioutil.ReadFile(inFile)
+	checkError(err)
+	contents := string(contentsBytes)
+
+	// Map
+	kvs := mapF(inFile, contents)
+
+	// Divide up intermediate key-values by output file
+	kvsByOutFile := make(map[string][]int)  // map: output filename -> indices of key-values
+	for i := range kvs {
+		key := kvs[i].Key
+		outFile := reduceName(jobName, mapTaskNumber, ihash(key))
+		kvsByOutFile[outFile] = append(kvsByOutFile[outFile], i)
+	}
+
+	// Write key-values to their corresponding output files
+	for outFile, indices := range kvsByOutFile {
+		for _, i := range indices {
+			// TODO: JSON encode and write kvs[i] to outFile. Then close file.
+		}
+	}
 }
 
 func ihash(s string) uint32 {

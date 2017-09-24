@@ -1,8 +1,10 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"hash/fnv"
 	"io/ioutil"
+	"os"
 )
 
 // doMap does the job of a map worker: it reads one of the input files
@@ -56,15 +58,21 @@ func doMap(
 	kvsByOutFile := make(map[string][]int)  // map: output filename -> indices of key-values
 	for i := range kvs {
 		key := kvs[i].Key
-		outFile := reduceName(jobName, mapTaskNumber, ihash(key))
+		outFile := reduceName(jobName, mapTaskNumber, int(ihash(key)))
 		kvsByOutFile[outFile] = append(kvsByOutFile[outFile], i)
 	}
 
 	// Write key-values to their corresponding output files
 	for outFile, indices := range kvsByOutFile {
+		out, err := os.Create(outFile)
+		checkError(err)
+		enc := json.NewEncoder(out)
 		for _, i := range indices {
-			// TODO: JSON encode and write kvs[i] to outFile. Then close file.
+			// JSON encode i'th key-value to output file
+			err := enc.Encode(&kvs[i])
+			checkError(err)
 		}
+		out.Close()
 	}
 }
 

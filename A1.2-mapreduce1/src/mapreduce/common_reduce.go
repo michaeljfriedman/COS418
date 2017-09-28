@@ -1,6 +1,7 @@
 package mapreduce
 
 import (
+	"encoding/json"
 	"os"
 )
 
@@ -49,12 +50,13 @@ func doReduce(
 		// Decode JSON for each key-value pair, and add it to the map
 		dec := json.NewDecoder(inFile)
 		for dec.More() {
+			// Decode
 			var kv KeyValue
 			err := dec.Decode(&kv)
 			checkError(err)
 
 			// Add key-value pair to map
-			append(valuesByKey[key], value)
+			valuesByKey[kv.Key] = append(valuesByKey[kv.Key], kv.Value)
 		}
 
 		inFile.Close()
@@ -71,7 +73,7 @@ func doReduce(
 
 		// Write output
 		err := enc.Encode(KeyValue{key, results})
-		checkError()
+		checkError(err)
 	}
 	outFile.Close()
 }

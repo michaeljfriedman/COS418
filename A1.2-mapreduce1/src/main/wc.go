@@ -3,8 +3,11 @@ package main
 import (
 	"fmt"
 	"mapreduce"
+	"log"
 	"os"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The mapping function is called once for each piece of the input.
@@ -15,7 +18,9 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 	// TODO: you have to write this function
 
 	// Divide text into words
-	words := strings.Fields(value)  // value = text contents of the document
+	words := strings.FieldsFunc(value, func(c rune) bool {
+		return !unicode.IsLetter(c)
+	})  // split text at non-letter characters
 
 	// Mark each word "present" in the document
 	for _, word := range words {
@@ -35,11 +40,15 @@ func reduceF(key string, values []string) string {
 	// `key` is the word, and `values` are counts of that word (encoded as
 	// strings). Add up all the counts.
 	totalCount := 0
-	for _, count := values {
-		totalCount += int(count)
+	for _, countStr := range values {
+		count, err := strconv.Atoi(countStr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		totalCount += count
 	}
 
-	return string(totalCount)
+	return strconv.Itoa(totalCount)
 }
 
 // Can be run in 3 ways:

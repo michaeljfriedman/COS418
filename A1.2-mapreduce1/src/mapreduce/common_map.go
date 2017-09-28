@@ -23,8 +23,8 @@ func doMap(
 	// indicates which map task produced them and which reduce task they are for.
 	// This map task should write output to a different file for each reduce task,
 	// based on the keys of the intermediate key/value pairs. You can map each key
-	// to a reduce task number r using ihash(). Then the filename to write to for
-	// the r'th reduce task can be found using
+	// to a reduce task number using ihash(). Map this number to an ID number r
+	// for one of the nReduce files, and find the filename for it with
 	// reduceName(jobName, mapTaskNumber, r).
 	//
 	// Coming up with a scheme for how to store the key/value pairs on disk can be
@@ -58,7 +58,8 @@ func doMap(
 	kvsByOutFile := make(map[string][]int)  // map: output filename -> indices of key-values
 	for i := range kvs {
 		key := kvs[i].Key
-		outFile := reduceName(jobName, mapTaskNumber, int(ihash(key)))
+		r := int(ihash(key) % uint32(nReduce))
+		outFile := reduceName(jobName, mapTaskNumber, r)
 		kvsByOutFile[outFile] = append(kvsByOutFile[outFile], i)
 	}
 

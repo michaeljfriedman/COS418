@@ -2,8 +2,8 @@ package main
 
 import (
 	"fmt"
-	"mapreduce"
 	"log"
+	"mapreduce"
 	"os"
 	"strconv"
 	"strings"
@@ -20,7 +20,7 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 	// Divide text into words
 	words := strings.FieldsFunc(value, func(c rune) bool {
 		return !unicode.IsLetter(c)
-	})  // split text at non-letter characters
+	}) // split text at non-letter characters
 
 	// Mark each word "present" in the document
 	for _, word := range words {

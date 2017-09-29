@@ -55,7 +55,7 @@ func doMap(
 	kvs := mapF(inFile, contents)
 
 	// Divide up intermediate key-values by output file
-	kvsByOutFile := make(map[string][]int)  // map: output filename -> indices of key-values
+	kvsByOutFile := make(map[string][]int) // map: output filename -> indices of key-values
 	for i := range kvs {
 		key := kvs[i].Key
 		r := int(ihash(key) % uint32(nReduce))

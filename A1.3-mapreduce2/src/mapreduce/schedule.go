@@ -22,10 +22,29 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 
+
+	// Store incomplete tasks on a channel. Failed tasks will be re-added
+	// to this channel to indicate that they need to be run again.
+	//
+	// We will know all tasks are done when this channel is closed. The
+	// worker that completes the last task will close this channel.
+	incompleteTasks := make(chan int, ntasks)
+	for taskNum := 0; taskNum < ntasks; taskNum++ {
+		incompleteTasks <- taskNum
+	}
+
+	// Store number of completed tasks on a channel (so goroutines can
+	// access it asynchronously). Workers check this value to determine
+	// when all tasks are done.
+	nCompletedTasks := make(chan int, 1)
+	nCompletedTasks <- 0
+
+	//-------------------------------------------
+
 	// Map phase
 	if phase == mapPhase {
-		// Assign each input file to a worker
-		for i := 0; i < ntasks; i++ {
+		// Assign each task to a worker
+		for i := range incompleteTasks {
 			// Set up args for worker
 			worker := <-mr.registerChannel
 			taskNum := i
@@ -41,9 +60,19 @@ func (mr *Master) schedule(phase jobPhase) {
 			go func() {
 				ok := call(worker, "Worker.DoTask", args, nil)
 				if ok == false {
-					// TODO: Handle failed worker. For now, assume workers are all successful.
+					// Worker failed. Put the failed task back on incompleteTasks
+					incompleteTasks <- taskNum
 				} else {
-					// Worker completed successfully. Put worker back on "idle" queue
+					// Worker completed successfully. Check if all tasks are completed
+					nOld := <-nCompletedTasks
+					nNew := nOld + 1
+					if nNew == ntasks {
+						close(incompleteTasks)	// indicates no more tasks to be done
+					} else {
+						nCompletedTasks <- nNew
+					}
+
+					// Put worker back on "idle" channel
 					mr.registerChannel <- worker
 				}
 			}()
@@ -54,8 +83,8 @@ func (mr *Master) schedule(phase jobPhase) {
 
 	// Reduce phase
 	if phase == reducePhase {
-		// Assign each intermediary file to a worker
-		for i := 0; i < ntasks; i++ {
+		// Assign eah task to a worker
+		for i := range incompleteTasks {
 			// Set up args for worker
 			worker := <-mr.registerChannel
 			taskNum := i
@@ -71,9 +100,19 @@ func (mr *Master) schedule(phase jobPhase) {
 			go func() {
 				ok := call(worker, "Worker.DoTask", args, nil)
 				if ok == false {
-					// TODO: Handle failed worker. For now, assume workers are all successful.
+					// Worker failed. Put the failed task back on incompleteTasks
+					incompleteTasks <- taskNum
 				} else {
-					// Worker completed successfully. Put worker back on "idle" queue
+					// Worker completed successfully. Check if all tasks are completed
+					nOld := <-nCompletedTasks
+					nNew := nOld + 1
+					if nNew == ntasks {
+						close(incompleteTasks)	// indicates no more tasks to be done
+					} else {
+						nCompletedTasks <- nNew
+					}
+
+					// Put worker back on "idle" channel
 					mr.registerChannel <- worker
 				}
 			}()

@@ -23,17 +23,18 @@ func (mr *Master) schedule(phase jobPhase) {
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 
 	// Map phase
-	if jobPhase == mapPhase {
+	if phase == mapPhase {
 		// Assign each input file to a worker
-		for taskNum, file := range mr.files {
+		for i := 0; i < ntasks; i++ {
 			// Set up args for worker
 			worker := <-mr.registerChannel
+			taskNum := i
 			args := DoTaskArgs{
 				mr.jobName,
-				file,
-				jobPhase,
+				mr.files[taskNum],	// input filename
+				phase,
 				taskNum,
-				nios				// number of intermediate output files
+				nios,								// number of intermediate output files
 			}
 
 			// Start worker
@@ -41,6 +42,9 @@ func (mr *Master) schedule(phase jobPhase) {
 				ok := call(worker, "Worker.DoTask", args, nil)
 				if ok == false {
 					// TODO: Handle failed worker. For now, assume workers are all successful.
+				} else {
+					// Worker completed successfully. Put worker back on "idle" queue
+					mr.registerChannel <- worker
 				}
 			}()
 		}
@@ -49,17 +53,18 @@ func (mr *Master) schedule(phase jobPhase) {
 	//-------------------------------------------
 
 	// Reduce phase
-	if jobPhase == reducePhase {
+	if phase == reducePhase {
 		// Assign each intermediary file to a worker
-		for taskNum := 0; taskNum < ntasks; taskNum++ {
+		for i := 0; i < ntasks; i++ {
 			// Set up args for worker
 			worker := <-mr.registerChannel
+			taskNum := i
 			args := DoTaskArgs{
 				mr.jobName,
-				nil,			// no filename
-				jobPhase,
+				"",				// no filename
+				phase,
 				taskNum,
-				nios			// number of original input files
+				nios,			// number of original input files
 			}
 
 			// Start worker
@@ -67,8 +72,11 @@ func (mr *Master) schedule(phase jobPhase) {
 				ok := call(worker, "Worker.DoTask", args, nil)
 				if ok == false {
 					// TODO: Handle failed worker. For now, assume workers are all successful.
+				} else {
+					// Worker completed successfully. Put worker back on "idle" queue
+					mr.registerChannel <- worker
 				}
-			}
+			}()
 		}
 	}
 

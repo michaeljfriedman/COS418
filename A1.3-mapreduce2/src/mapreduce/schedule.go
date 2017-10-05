@@ -22,7 +22,6 @@ func (mr *Master) schedule(phase jobPhase) {
 	//
 	// TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO TODO
 
-
 	// Store incomplete tasks on a channel. Failed tasks will be re-added
 	// to this channel to indicate that they need to be run again.
 	//
@@ -50,10 +49,10 @@ func (mr *Master) schedule(phase jobPhase) {
 			taskNum := i
 			args := DoTaskArgs{
 				mr.jobName,
-				mr.files[taskNum],	// input filename
+				mr.files[taskNum], // input filename
 				phase,
 				taskNum,
-				nios,								// number of intermediate output files
+				nios, // number of intermediate output files
 			}
 
 			// Start worker
@@ -67,7 +66,7 @@ func (mr *Master) schedule(phase jobPhase) {
 					nOld := <-nCompletedTasks
 					nNew := nOld + 1
 					if nNew == ntasks {
-						close(incompleteTasks)	// indicates no more tasks to be done
+						close(incompleteTasks) // indicates no more tasks to be done
 					} else {
 						nCompletedTasks <- nNew
 					}
@@ -90,10 +89,10 @@ func (mr *Master) schedule(phase jobPhase) {
 			taskNum := i
 			args := DoTaskArgs{
 				mr.jobName,
-				"",				// no filename
+				"", // no filename
 				phase,
 				taskNum,
-				nios,			// number of original input files
+				nios, // number of original input files
 			}
 
 			// Start worker
@@ -107,7 +106,7 @@ func (mr *Master) schedule(phase jobPhase) {
 					nOld := <-nCompletedTasks
 					nNew := nOld + 1
 					if nNew == ntasks {
-						close(incompleteTasks)	// indicates no more tasks to be done
+						close(incompleteTasks) // indicates no more tasks to be done
 					} else {
 						nCompletedTasks <- nNew
 					}

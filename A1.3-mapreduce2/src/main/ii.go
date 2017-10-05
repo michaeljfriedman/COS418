@@ -19,7 +19,7 @@ func mapF(document string, value string) (res []mapreduce.KeyValue) {
 	// Split document into words
 	words := strings.FieldsFunc(value, func(c rune) bool {
 		return !unicode.IsLetter(c)
-	})  // split text at non-letter characters
+	}) // split text at non-letter characters
 
 	// Mark each word "present" (only once, if word appears more than once)
 	// in this document
@@ -52,7 +52,6 @@ func reduceF(key string, values []string) string {
 
 	// Create formatted string
 	return fmt.Sprintf("%d %s", len(values), sorted_docs_string)
-
 
 }
 

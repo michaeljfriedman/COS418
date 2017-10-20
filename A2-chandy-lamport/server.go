@@ -1,6 +1,35 @@
 package chandy_lamport
 
+import "sync"
 import "log"
+
+// Concurrency-safe boolean value. Synchronizes reads/writes
+type SyncBool struct {
+	b bool
+	lock sync.RWMutex
+}
+
+// Returns new SyncBool
+func NewSyncBool() *SyncBool {
+	syncBool := SyncBool{}
+	return &syncBool
+}
+
+// Sets value of this bool
+func (syncBool *SyncBool) Set(val bool) {
+	syncBool.lock.Lock()
+	defer syncBool.lock.Unlock()
+	syncBool.b = val
+}
+
+// Gets value of this bool
+func (syncBool *SyncBool) Get() bool {
+	syncBool.lock.Lock()
+	defer syncBool.lock.Unlock()
+	return syncBool.b
+}
+
+//--------------------------------------
 
 // The main participant of the distributed snapshot protocol.
 // Servers exchange token messages and marker messages among each other.
@@ -8,12 +37,16 @@ import "log"
 // Marker messages represent the progress of the snapshot process. The bulk of
 // the distributed protocol is implemented in `HandlePacket` and `StartSnapshot`.
 type Server struct {
-	Id            string
-	Tokens        int
-	sim           *Simulator
-	outboundLinks map[string]*Link // key = link.dest
-	inboundLinks  map[string]*Link // key = link.src
+	Id                  string
+	Tokens              int
+	sim                 *Simulator
+	outboundLinks       map[string]*Link // key = link.dest
+	inboundLinks        map[string]*Link // key = link.src
 	// TODO: ADD MORE FIELDS HERE
+	TokensInSnapshot    int
+	TokensInLink        *SyncMap  // link.src (inbound) -> # tokens
+	isRecordingLink     *SyncMap  // link.src (inbound) -> is recording tokens?
+	isSnapshotting      *SyncBool
 }
 
 // A unidirectional communication channel between two servers
@@ -80,15 +113,78 @@ func (server *Server) SendTokens(numTokens int, dest string) {
 		server.sim.GetReceiveTime()})
 }
 
+// Helper function for checking "ok" boolean values. Crashes if `ok` is false,
+// printing error message `msg`.
+func checkOk(ok bool, msg string) {
+	if !ok {
+		log.Fatalln(msg)
+	}
+}
+
 // Callback for when a message is received on this server.
 // When the snapshot algorithm completes on this server, this function
 // should notify the simulator by calling `sim.NotifySnapshotComplete`.
 func (server *Server) HandlePacket(src string, message interface{}) {
 	// TODO: IMPLEMENT ME
+
+	switch msg := msg.(type) {
+		case TokenMessage:
+			server.Tokens++
+
+			// Increment num tokens in this inbound link, if appropriate
+			isRecording, ok := server.isRecordingLink.Load(src)
+			checkOk(ok)
+			if server.isSnapshotting.Get() && isRecording {
+				tokensInLink, ok := server.TokensInLink.Load(src)
+				checkOk(ok, "Error: server.TokensInLink.Load() failed")
+				server.TokensInLink.Store(src, tokensInLink + 1)
+			}
+		case MarkerMessage:
+			snapshotId := msg.snapshotId
+
+			// Start snapshotting if I haven't started yet
+			if !server.isSnapshotting.Get() {
+				server.StartSnapshot(snapshotId)
+			}
+
+			// Stop recording messages from this sender
+			server.isRecordingLink.Store(src, false)
+
+			// Stop snapshotting if this was the last marker received, and notify
+			// simulator.
+			doneRecording := true
+			for _, serverId := range getSortedKeys(server.inboundLinks) {
+				isRecording, ok := server.isRecordingLink.Load(serverId)
+				checkOk(ok, "Error: server.isRecordingLink.Load() failed")
+				if isRecording {
+					doneRecording = false
+					break
+				}
+			}
+
+			if server.isSnapshotting.Get() && doneRecording {
+				server.isSnapshotting.Set(false)
+				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
+			}
+	}
 }
 
 // Start the chandy-lamport snapshot algorithm on this server.
 // This should be called only once per server.
 func (server *Server) StartSnapshot(snapshotId int) {
 	// TODO: IMPLEMENT ME
+
+	// Record my state, and start recording state of inbound links
+	server.TokensInSnapshot = server.Tokens  // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
+	server.TokensInLink = NewSyncMap()
+	server.isRecordingLink = NewSyncMap()
+	for _, serverId := range getSortedKeys(server.inboundLinks) {
+		server.TokensInLink.Store(serverId, 0)
+		server.isRecordingLink.Store(serverId, true)
+	}
+	server.isSnapshotting = NewSyncBool()
+	server.isSnapshotting.Set(true)
+
+	// Send markers out to all neighbors
+	server.SendToNeighbors(MarkerMessage{snapshotId})
 }

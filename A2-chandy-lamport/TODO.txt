@@ -1,0 +1,30 @@
+(Note: The parts defined below are self-imposed, not official parts listed on
+the assignment page.)
+
+==============================================
+Part 1 - Implement w/o concurrent snapshots
+(i.e. each server does only 1 snapshot)
+==============================================
+
+server.go
+
+- Add attrs to keep track of local snapshot
+  - Implement SyncBool type (concurrency-safe bool) for isSnapshotting
+- Implement StartSnapshot()
+- Implement HandlePacket()
+
+-----------------> Done 10/19/17
+
+simulator.go
+
+- Add attrs to keep track of which servers finished their snapshots
+- Implement StartSnapshot()
+- Implement NotifySnapshotComplete()
+- Implement CollectSnapshot()
+
+
+==============================================
+Part 2 - Implement concurrent snapshots
+==============================================
+
+TODO

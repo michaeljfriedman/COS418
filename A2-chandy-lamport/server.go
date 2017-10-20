@@ -31,6 +31,41 @@ func (syncBool *SyncBool) Get() bool {
 
 //--------------------------------------
 
+// Concurrency-safe counter. Synchronizes reads/writes
+type SyncCounter struct {
+	count int
+	lock sync.RWMutex
+}
+
+// Returns new SyncCounter, starting from 0
+func NewSyncCounter() *SyncCounter {
+	syncCounter := SyncCounter{}
+	return &syncCounter
+}
+
+// Resets this counter to 0
+func (syncCounter *SyncCounter) Reset() {
+	syncCounter.lock.Lock()
+	defer syncCounter.lock.Unlock()
+	syncCounter.count = 0
+}
+
+// Increments this counter
+func (syncCounter *SyncCounter) Inc() {
+	syncCounter.lock.Lock()
+	defer syncCounter.lock.Unlock()
+	syncCounter.count++
+}
+
+// Gets value of this counter
+func (syncCounter *SyncCounter) Get() int {
+	syncCounter.lock.Lock()
+	defer syncCounter.lock.Unlock()
+	return syncCounter.count
+}
+
+//--------------------------------------
+
 // The main participant of the distributed snapshot protocol.
 // Servers exchange token messages and marker messages among each other.
 // Token messages represent the transfer of tokens from one server to another.
@@ -43,9 +78,12 @@ type Server struct {
 	outboundLinks       map[string]*Link // key = link.dest
 	inboundLinks        map[string]*Link // key = link.src
 	// TODO: ADD MORE FIELDS HERE
+
+	// Fields to keep track of snapshot
 	TokensInSnapshot    int
-	TokensInLink        *SyncMap  // link.src (inbound) -> # tokens
+	MsgsRecvd           []SnapshotMessage // msgs received on in-links
 	isRecordingLink     *SyncMap  // link.src (inbound) -> is recording tokens?
+	linksDoneRecording  *SyncCounter
 	isSnapshotting      *SyncBool
 }
 
@@ -65,8 +103,9 @@ func NewServer(id string, tokens int, sim *Simulator) *Server {
 		make(map[string]*Link),
 		make(map[string]*Link),
 		0,
+		make([]SnapshotMessage, 0),
 		NewSyncMap(),
-		NewSyncMap(),
+		NewSyncCounter(),
 		NewSyncBool(),
 	}
 }
@@ -135,15 +174,12 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 		case TokenMessage:
 			server.Tokens++
 
-			// Increment num tokens in this inbound link, if appropriate
+			// Record message, if appropriate
 			val, ok := server.isRecordingLink.Load(src)
 			isRecording := val.(bool)
 			checkOk(ok, "Error: server.isRecordingLink.Load() failed")
 			if server.isSnapshotting.Get() && isRecording {
-				val, ok := server.TokensInLink.Load(src)
-				tokensInLink := val.(int)
-				checkOk(ok, "Error: server.TokensInLink.Load() failed")
-				server.TokensInLink.Store(src, tokensInLink + 1)
+				server.MsgsRecvd = append(server.MsgsRecvd, SnapshotMessage{src, server.Id, message})
 			}
 		case MarkerMessage:
 			snapshotId := message.snapshotId
@@ -155,21 +191,11 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 
 			// Stop recording messages from this sender
 			server.isRecordingLink.Store(src, false)
+			server.linksDoneRecording.Inc()
 
-			// Stop snapshotting if this was the last marker received, and notify
+			// Stop snapshotting if all I'm done recording all links, and notify
 			// simulator.
-			doneRecording := true
-			for _, serverId := range getSortedKeys(server.inboundLinks) {
-				val, ok := server.isRecordingLink.Load(serverId)
-				isRecording := val.(bool)
-				checkOk(ok, "Error: server.isRecordingLink.Load() failed")
-				if isRecording {
-					doneRecording = false
-					break
-				}
-			}
-
-			if server.isSnapshotting.Get() && doneRecording {
+			if server.isSnapshotting.Get() && server.linksDoneRecording.Get() == len(server.inboundLinks) {
 				server.isSnapshotting.Set(false)
 				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
 			}
@@ -184,9 +210,9 @@ func (server *Server) StartSnapshot(snapshotId int) {
 	// Record my state, and start recording state of inbound links
 	server.TokensInSnapshot = server.Tokens  // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
 	for _, serverId := range getSortedKeys(server.inboundLinks) {
-		server.TokensInLink.Store(serverId, 0)
 		server.isRecordingLink.Store(serverId, true)
 	}
+	server.linksDoneRecording.Reset()
 	server.isSnapshotting = NewSyncBool()
 	server.isSnapshotting.Set(true)
 

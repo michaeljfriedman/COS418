@@ -10,6 +10,7 @@ server.go
 
 - Add attrs to keep track of local snapshot
   - Implement SyncBool type (concurrency-safe bool) for isSnapshotting
+  - Implement SyncCounter type
 - Implement StartSnapshot()
 - Implement HandlePacket()
 
@@ -21,6 +22,11 @@ simulator.go
 - Implement StartSnapshot()
 - Implement NotifySnapshotComplete()
 - Implement CollectSnapshot()
+
+
+EXTRA
+
+- Upgrade to Go 1.8 so sort.Slice() will be recognized and compile
 
 
 ==============================================

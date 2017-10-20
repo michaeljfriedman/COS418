@@ -172,14 +172,16 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 
 	switch message := message.(type) {
 		case TokenMessage:
-			server.Tokens++
+			server.Tokens += message.numTokens
 
 			// Record message, if appropriate
-			val, ok := server.isRecordingLink.Load(src)
-			isRecording := val.(bool)
-			checkOk(ok, "Error: server.isRecordingLink.Load() failed")
-			if server.isSnapshotting.Get() && isRecording {
-				server.MsgsRecvd = append(server.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
+			if server.isSnapshotting.Get() {
+				val, ok := server.isRecordingLink.Load(src)
+				isRecording := val.(bool)
+				checkOk(ok, "Error: server.isRecordingLink.Load() failed")
+				if isRecording {
+					server.MsgsRecvd = append(server.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
+				}
 			}
 		case MarkerMessage:
 			snapshotId := message.snapshotId

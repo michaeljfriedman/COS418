@@ -30,6 +30,17 @@ EXTRA
 
 - Upgrade to Go 1.8 so sort.Slice() will be recognized and compile
 
+-----------------> Done 10/20/17
+
+
+Debugging
+- server.go, 179: interface conversion to bool failed
+- 3Node failing
+
+-----------------> Done 10/20/17 3:40pm
+
+- 8Node failing
+
 
 ==============================================
 Part 2 - Implement concurrent snapshots

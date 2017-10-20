@@ -23,6 +23,11 @@ func runTest(t *testing.T, topFile string, eventsFile string, snapFiles []string
 		t.Fatalf("Expected %v snapshot(s), got %v\n", len(snapFiles), len(actualSnaps))
 	}
 
+	if debug {
+		sim.logger.PrettyPrint()
+		fmt.Println()
+	}
+
 	// Verify that the number of tokens are preserved in the snapshots
 	checkTokens(sim, actualSnaps)
 	// Verify against golden files
@@ -34,10 +39,6 @@ func runTest(t *testing.T, topFile string, eventsFile string, snapFiles []string
 	sortSnapshots(expectedSnaps)
 	for i := 0; i < len(actualSnaps); i++ {
 		assertEqual(expectedSnaps[i], actualSnaps[i])
-	}
-	if debug {
-		sim.logger.PrettyPrint()
-		fmt.Println()
 	}
 }
 

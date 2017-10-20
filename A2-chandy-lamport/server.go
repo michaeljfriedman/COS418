@@ -64,6 +64,10 @@ func NewServer(id string, tokens int, sim *Simulator) *Server {
 		sim,
 		make(map[string]*Link),
 		make(map[string]*Link),
+		0,
+		NewSyncMap(),
+		NewSyncMap(),
+		NewSyncBool(),
 	}
 }
 
@@ -127,20 +131,22 @@ func checkOk(ok bool, msg string) {
 func (server *Server) HandlePacket(src string, message interface{}) {
 	// TODO: IMPLEMENT ME
 
-	switch msg := msg.(type) {
+	switch message := message.(type) {
 		case TokenMessage:
 			server.Tokens++
 
 			// Increment num tokens in this inbound link, if appropriate
-			isRecording, ok := server.isRecordingLink.Load(src)
-			checkOk(ok)
+			val, ok := server.isRecordingLink.Load(src)
+			isRecording := val.(bool)
+			checkOk(ok, "Error: server.isRecordingLink.Load() failed")
 			if server.isSnapshotting.Get() && isRecording {
-				tokensInLink, ok := server.TokensInLink.Load(src)
+				val, ok := server.TokensInLink.Load(src)
+				tokensInLink := val.(int)
 				checkOk(ok, "Error: server.TokensInLink.Load() failed")
 				server.TokensInLink.Store(src, tokensInLink + 1)
 			}
 		case MarkerMessage:
-			snapshotId := msg.snapshotId
+			snapshotId := message.snapshotId
 
 			// Start snapshotting if I haven't started yet
 			if !server.isSnapshotting.Get() {
@@ -154,7 +160,8 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 			// simulator.
 			doneRecording := true
 			for _, serverId := range getSortedKeys(server.inboundLinks) {
-				isRecording, ok := server.isRecordingLink.Load(serverId)
+				val, ok := server.isRecordingLink.Load(serverId)
+				isRecording := val.(bool)
 				checkOk(ok, "Error: server.isRecordingLink.Load() failed")
 				if isRecording {
 					doneRecording = false
@@ -176,8 +183,6 @@ func (server *Server) StartSnapshot(snapshotId int) {
 
 	// Record my state, and start recording state of inbound links
 	server.TokensInSnapshot = server.Tokens  // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
-	server.TokensInLink = NewSyncMap()
-	server.isRecordingLink = NewSyncMap()
 	for _, serverId := range getSortedKeys(server.inboundLinks) {
 		server.TokensInLink.Store(serverId, 0)
 		server.isRecordingLink.Store(serverId, true)

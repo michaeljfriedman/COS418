@@ -1,70 +1,7 @@
 package chandy_lamport
 
-import "sync"
 import "log"
 
-// Concurrency-safe boolean value. Synchronizes reads/writes
-type SyncBool struct {
-	b bool
-	lock sync.RWMutex
-}
-
-// Returns new SyncBool
-func NewSyncBool() *SyncBool {
-	syncBool := SyncBool{}
-	return &syncBool
-}
-
-// Sets value of this bool
-func (syncBool *SyncBool) Set(val bool) {
-	syncBool.lock.Lock()
-	defer syncBool.lock.Unlock()
-	syncBool.b = val
-}
-
-// Gets value of this bool
-func (syncBool *SyncBool) Get() bool {
-	syncBool.lock.Lock()
-	defer syncBool.lock.Unlock()
-	return syncBool.b
-}
-
-//--------------------------------------
-
-// Concurrency-safe counter. Synchronizes reads/writes
-type SyncCounter struct {
-	count int
-	lock sync.RWMutex
-}
-
-// Returns new SyncCounter, starting from 0
-func NewSyncCounter() *SyncCounter {
-	syncCounter := SyncCounter{}
-	return &syncCounter
-}
-
-// Resets this counter to 0
-func (syncCounter *SyncCounter) Reset() {
-	syncCounter.lock.Lock()
-	defer syncCounter.lock.Unlock()
-	syncCounter.count = 0
-}
-
-// Increments this counter
-func (syncCounter *SyncCounter) Inc() {
-	syncCounter.lock.Lock()
-	defer syncCounter.lock.Unlock()
-	syncCounter.count++
-}
-
-// Gets value of this counter
-func (syncCounter *SyncCounter) Get() int {
-	syncCounter.lock.Lock()
-	defer syncCounter.lock.Unlock()
-	return syncCounter.count
-}
-
-//--------------------------------------
 
 // The main participant of the distributed snapshot protocol.
 // Servers exchange token messages and marker messages among each other.
@@ -80,11 +17,16 @@ type Server struct {
 	// TODO: ADD MORE FIELDS HERE
 
 	// Fields to keep track of snapshot
-	TokensInSnapshot    int
-	MsgsRecvd           []*SnapshotMessage // msgs received on in-links
-	isRecordingLink     *SyncMap  // link.src (inbound) -> is recording tokens?
-	linksDoneRecording  *SyncCounter
-	isSnapshotting      *SyncBool
+	snapshots           *SyncMap  // snapshot id -> local snapshot state
+}
+
+// A container for this server's local snapshot state
+type LocalSnapshotState struct {
+	Tokens             int
+	MsgsRecvd          []*SnapshotMessage
+	isRecordingLink    *SyncMap  // server id -> is recording tokens from that server?
+	linksDoneRecording int
+	isInProgress       bool
 }
 
 // A unidirectional communication channel between two servers
@@ -102,11 +44,7 @@ func NewServer(id string, tokens int, sim *Simulator) *Server {
 		sim,
 		make(map[string]*Link),
 		make(map[string]*Link),
-		0,
-		make([]*SnapshotMessage, 0),
 		NewSyncMap(),
-		NewSyncCounter(),
-		NewSyncBool(),
 	}
 }
 
@@ -174,40 +112,52 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 		case TokenMessage:
 			server.Tokens += message.numTokens
 
-			// Record message, if appropriate
-			if server.isSnapshotting.Get() {
-				val, ok := server.isRecordingLink.Load(src)
-				isRecording := val.(bool)
-				checkOk(ok, "Error: server.isRecordingLink.Load() failed")
-				if isRecording {
-					server.MsgsRecvd = append(server.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
+			// Record message in each snapshot, if appropriate
+			server.snapshots.Range(func(key, val interface{}) bool {
+				snapshotId := key.(int)
+				snapshot := val.(*LocalSnapshotState)
+
+				// Record if this snapshot is in progress
+				if snapshot.isInProgress {
+					val, ok := snapshot.isRecordingLink.Load(src)
+					isRecording := val.(bool)
+					checkOk(ok, "Error: snapshot.isRecordingLink.Load() failed")
+					if isRecording {
+						snapshot.MsgsRecvd = append(snapshot.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
+					}
 				}
-			}
+
+				return true
+			})
 		case MarkerMessage:
+			// Get snapshot corresponding to this marker
 			snapshotId := message.snapshotId
+			val, ok := server.snapshots.Load(snapshotId)
+			checkOk(ok, "Error: server.snapshots.Load() failed")
+			snapshot := val.(*LocalSnapshotState)
 
 			// Start snapshotting if I haven't started yet
-			if !server.isSnapshotting.Get() {
+			if !snapshot.isInProgress {
 				server.StartSnapshot(snapshotId)
 			}
 
 			// Stop recording messages from this sender
-			server.isRecordingLink.Store(src, false)
-			server.linksDoneRecording.Inc()
+			snapshot.isRecordingLink.Store(src, false)
+			snapshot.linksDoneRecording++
 
-			// Stop snapshotting if all I'm done recording all links, and notify
+			// Stop snapshotting if I'm done recording all links, and notify
 			// simulator.
-			if server.isSnapshotting.Get() && server.linksDoneRecording.Get() == len(server.inboundLinks) {
-				server.isSnapshotting.Set(false)
+			if snapshot.isInProgress && snapshot.linksDoneRecording == len(server.inboundLinks) {
+				snapshot.isInProgress = false
 				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
 
 				// DEBUG: Print snapshot
 				// totalTokens := 0
-				// for _, msg := range server.MsgsRecvd {  // count tokens in all msgs received
+				// for _, msg := range snapshot.MsgsRecvd {  // count tokens in all msgs received
 				// 	tokenMsg := msg.message.(TokenMessage)
 				// 	totalTokens += tokenMsg.numTokens
 				// }
-				// log.Printf("[MJF] Snapshot %v. Server %v done: num tokens = %v, msgs received = %v\n", snapshotId, server.Id, server.TokensInSnapshot, totalTokens)
+				// log.Printf("[MJF] Snapshot %v. Server %v done: num tokens = %v, msgs received = %v\n", snapshotId, server.Id, snapshot.TokensInSnapshot, totalTokens)
 			}
 	}
 }
@@ -218,14 +168,22 @@ func (server *Server) StartSnapshot(snapshotId int) {
 	// TODO: IMPLEMENT ME
 
 	// Record my state, and start recording state of inbound links
-	server.TokensInSnapshot = server.Tokens  // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
-	server.MsgsRecvd = make([]*SnapshotMessage, 0)
+	tokensInSnapshot := server.Tokens // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
+	msgsRecvd := make([]*SnapshotMessage, 0)
+	isRecordingLink := NewSyncMap()
 	for _, serverId := range getSortedKeys(server.inboundLinks) {
-		server.isRecordingLink.Store(serverId, true)
+		isRecordingLink.Store(serverId, true)
 	}
-	server.linksDoneRecording.Reset()
-	server.isSnapshotting = NewSyncBool()
-	server.isSnapshotting.Set(true)
+	linksDoneRecording := 0
+	isInProgress := true
+
+	server.snapshots.Store(snapshotId, &LocalSnapshotState{
+		tokensInSnapshot,
+		msgsRecvd,
+		isRecordingLink,
+		linksDoneRecording,
+		isInProgress,
+	})
 
 	// Send markers out to all neighbors
 	server.SendToNeighbors(MarkerMessage{snapshotId})

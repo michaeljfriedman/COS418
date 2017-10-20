@@ -48,4 +48,15 @@ Debugging
 Part 2 - Implement concurrent snapshots
 ==============================================
 
-TODO
+server.go
+
+- Update attrs
+- Update StartSnapshot()
+- Update HandlePacket()
+
+----------------> Done 10/20/17 7:05pm
+
+simulator.go
+- Update attr
+- Update NotifySnapshotComplete()
+- Update CollectSnapshot()

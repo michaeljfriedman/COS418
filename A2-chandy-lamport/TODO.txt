@@ -23,6 +23,8 @@ simulator.go
 - Implement NotifySnapshotComplete()
 - Implement CollectSnapshot()
 
+-----------------> Done 10/20/17
+
 
 EXTRA
 

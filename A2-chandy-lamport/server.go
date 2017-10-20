@@ -81,7 +81,7 @@ type Server struct {
 
 	// Fields to keep track of snapshot
 	TokensInSnapshot    int
-	MsgsRecvd           []SnapshotMessage // msgs received on in-links
+	MsgsRecvd           []*SnapshotMessage // msgs received on in-links
 	isRecordingLink     *SyncMap  // link.src (inbound) -> is recording tokens?
 	linksDoneRecording  *SyncCounter
 	isSnapshotting      *SyncBool
@@ -103,7 +103,7 @@ func NewServer(id string, tokens int, sim *Simulator) *Server {
 		make(map[string]*Link),
 		make(map[string]*Link),
 		0,
-		make([]SnapshotMessage, 0),
+		make([]*SnapshotMessage, 0),
 		NewSyncMap(),
 		NewSyncCounter(),
 		NewSyncBool(),
@@ -179,7 +179,7 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 			isRecording := val.(bool)
 			checkOk(ok, "Error: server.isRecordingLink.Load() failed")
 			if server.isSnapshotting.Get() && isRecording {
-				server.MsgsRecvd = append(server.MsgsRecvd, SnapshotMessage{src, server.Id, message})
+				server.MsgsRecvd = append(server.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
 			}
 		case MarkerMessage:
 			snapshotId := message.snapshotId

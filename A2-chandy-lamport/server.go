@@ -24,7 +24,8 @@ type Server struct {
 type LocalSnapshotState struct {
 	Tokens             int
 	MsgsRecvd          []*SnapshotMessage
-	isRecordingLink    *SyncMap  // server id -> is recording tokens from that server?
+	isRecordingLink    *SyncMap  // server id -> is recording tokens from that
+	                             // server?
 	linksDoneRecording int
 	isInProgress       bool
 }
@@ -114,7 +115,7 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 
 			// Record message in each snapshot, if appropriate
 			server.snapshots.Range(func(key, val interface{}) bool {
-				snapshotId := key.(int)
+				// key = snapshot id (int), val = snapshot (LocalSnapshotState)
 				snapshot := val.(*LocalSnapshotState)
 
 				// Record if this snapshot is in progress

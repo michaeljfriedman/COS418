@@ -60,3 +60,5 @@ simulator.go
 - Update attr
 - Update NotifySnapshotComplete()
 - Update CollectSnapshot()
+
+----------------> Done 10/20/17 9:20pm

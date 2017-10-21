@@ -133,14 +133,17 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 		case MarkerMessage:
 			// Get snapshot corresponding to this marker
 			snapshotId := message.snapshotId
+			val, snapshotExists := server.snapshots.Load(snapshotId)
+
+			// Start snapshotting if I haven't started yet
+			if !snapshotExists {
+				server.StartSnapshot(snapshotId)
+			}
+
+			// Get snapshot again in case it was just started
 			val, ok := server.snapshots.Load(snapshotId)
 			checkOk(ok, "Error: server.snapshots.Load() failed")
 			snapshot := val.(*LocalSnapshotState)
-
-			// Start snapshotting if I haven't started yet
-			if !snapshot.isInProgress {
-				server.StartSnapshot(snapshotId)
-			}
 
 			// Stop recording messages from this sender
 			snapshot.isRecordingLink.Store(src, false)

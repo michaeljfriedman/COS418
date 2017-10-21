@@ -16,7 +16,7 @@ type Server struct {
 	inboundLinks        map[string]*Link // key = link.src
 	// TODO: ADD MORE FIELDS HERE
 
-	// Fields to keep track of snapshot
+	// Keeps track of snapshots with LocalSnapshotStates
 	snapshots           *SyncMap  // snapshot id -> local snapshot state
 }
 
@@ -24,10 +24,10 @@ type Server struct {
 type LocalSnapshotState struct {
 	Tokens             int
 	MsgsRecvd          []*SnapshotMessage
-	isRecordingLink    *SyncMap  // server id -> is recording tokens from that
+	isRecordingLink    *SyncMap  // server id -> am I recording tokens from that
 	                             // server?
 	linksDoneRecording int
-	isInProgress       bool
+	isDone             bool
 }
 
 // A unidirectional communication channel between two servers
@@ -119,7 +119,7 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 				snapshot := val.(*LocalSnapshotState)
 
 				// Record if this snapshot is in progress
-				if snapshot.isInProgress {
+				if !snapshot.isDone {
 					val, ok := snapshot.isRecordingLink.Load(src)
 					isRecording := val.(bool)
 					checkOk(ok, "Error: snapshot.isRecordingLink.Load() failed")
@@ -133,10 +133,10 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 		case MarkerMessage:
 			// Get snapshot corresponding to this marker
 			snapshotId := message.snapshotId
-			val, snapshotExists := server.snapshots.Load(snapshotId)
+			val, isSnapshotStarted := server.snapshots.Load(snapshotId)
 
 			// Start snapshotting if I haven't started yet
-			if !snapshotExists {
+			if !isSnapshotStarted {
 				server.StartSnapshot(snapshotId)
 			}
 
@@ -151,8 +151,8 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 
 			// Stop snapshotting if I'm done recording all links, and notify
 			// simulator.
-			if snapshot.isInProgress && snapshot.linksDoneRecording == len(server.inboundLinks) {
-				snapshot.isInProgress = false
+			if !snapshot.isDone && snapshot.linksDoneRecording == len(server.inboundLinks) {
+				snapshot.isDone = true
 				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
 
 				// DEBUG: Print snapshot
@@ -172,21 +172,21 @@ func (server *Server) StartSnapshot(snapshotId int) {
 	// TODO: IMPLEMENT ME
 
 	// Record my state, and start recording state of inbound links
-	tokensInSnapshot := server.Tokens // TODO: Note that server.Tokens may need to be locked before reading it. Check here if you encounter bugs.
+	tokensInSnapshot := server.Tokens
 	msgsRecvd := make([]*SnapshotMessage, 0)
 	isRecordingLink := NewSyncMap()
 	for _, serverId := range getSortedKeys(server.inboundLinks) {
 		isRecordingLink.Store(serverId, true)
 	}
 	linksDoneRecording := 0
-	isInProgress := true
+	isDone := false
 
 	server.snapshots.Store(snapshotId, &LocalSnapshotState{
 		tokensInSnapshot,
 		msgsRecvd,
 		isRecordingLink,
 		linksDoneRecording,
-		isInProgress,
+		isDone,
 	})
 
 	// Send markers out to all neighbors

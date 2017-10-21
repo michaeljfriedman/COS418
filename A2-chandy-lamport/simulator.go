@@ -26,13 +26,13 @@ type Simulator struct {
 	// TODO: ADD MORE FIELDS HERE
 
 	// Field for collecting global snapshot
-	snapshotStats  *SyncMap   // snapshot id -> ServerStats for that snapshot
+	snapshotStats  *SyncMap   // snapshot id -> ServerSnapshotStats
 }
 
 // A container for the stats about each server during a snapshot
-type ServerStats struct {
-	isDoneSnapshotting  *SyncMap   // server id -> done snapshotting? (chan bool,
-	                               // where chan will hold only 1 value)
+type ServerSnapshotStats struct {
+	isDone  *SyncMap   // server id -> is that server done snapshotting?
+	                   // (chan bool, where chan will hold only 1 value)
 }
 
 func NewSimulator() *Simulator {
@@ -119,17 +119,17 @@ func (sim *Simulator) StartSnapshot(serverId string) {
 	sim.logger.RecordEvent(sim.servers[serverId], StartSnapshot{serverId, snapshotId})
 	// TODO: IMPLEMENT ME
 
-	// Init isDoneSnapshotting map, which maps each server (by id) to a boolean
+	// Init isDone map, which maps each server (by id) to a boolean
 	// indicating whether it's done snapshotting. Store this boolean in a
 	// *channel* to automatically block until a server is done.
 	//
 	// (See CollectSnapshot() for how this is used)
-	isDoneSnapshotting := NewSyncMap()
+	isDone := NewSyncMap()
 	for _, serverId := range getSortedKeys(sim.servers) {
 		ch := make(chan bool, 1)
-		isDoneSnapshotting.Store(serverId, ch)
+		isDone.Store(serverId, ch)
 	}
-	sim.snapshotStats.Store(snapshotId, &ServerStats{isDoneSnapshotting})
+	sim.snapshotStats.Store(snapshotId, &ServerSnapshotStats{isDone})
 
 	// Tell server to start snapshot
 	server := sim.servers[serverId]
@@ -145,14 +145,14 @@ func (sim *Simulator) NotifySnapshotComplete(serverId string, snapshotId int) {
 	// Get stats for this snapshot
 	val, ok := sim.snapshotStats.Load(snapshotId)
 	checkOk(ok, "Error: sim.snapshotStats.Load() failed")
-	serverStats := val.(*ServerStats)
+	serverStats := val.(*ServerSnapshotStats)
 
 	// Mark that this server is done with snapshot
 	//
-	// We send `true` into this server's chan. CollectSnapshot() reads from this
-	// chan to determine when the server is done.
-	val, ok = serverStats.isDoneSnapshotting.Load(serverId)
-	checkOk(ok, "Error: serverStats.isDoneSnapshotting.Load() failed")
+	// Do this by sending `true` into this server's chan. CollectSnapshot() reads
+	// from this chan to determine when the server is done.
+	val, ok = serverStats.isDone.Load(serverId)
+	checkOk(ok, "Error: serverStats.isDone.Load() failed")
 	ch := val.(chan bool)
 	ch <- true
 }
@@ -165,15 +165,15 @@ func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 	// Get stats for this snapshot
 	val, ok := sim.snapshotStats.Load(snapshotId)
 	checkOk(ok, "Error: sim.snapshotStats.Load() failed")
-	serverStats := val.(*ServerStats)
+	serverStats := val.(*ServerSnapshotStats)
 
 	// Wait until all servers are done
 	//
 	// Pulling a value off a server's chan indicates that it's done
 	// (NotifySnapshotComplete() puts these values on the chan.)
 	for _, serverId := range getSortedKeys(sim.servers) {
-		val, ok := serverStats.isDoneSnapshotting.Load(serverId)
-		checkOk(ok, "Error: serverStats.isDoneSnapshotting.Load() failed")
+		val, ok := serverStats.isDone.Load(serverId)
+		checkOk(ok, "Error: serverStats.isDone.Load() failed")
 		ch := val.(chan bool)
 		if <-ch {
 			continue  // this server is done

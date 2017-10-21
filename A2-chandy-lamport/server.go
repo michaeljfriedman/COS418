@@ -154,14 +154,6 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 			if !snapshot.isDone && snapshot.linksDoneRecording == len(server.inboundLinks) {
 				snapshot.isDone = true
 				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
-
-				// DEBUG: Print snapshot
-				// totalTokens := 0
-				// for _, msg := range snapshot.MsgsRecvd {  // count tokens in all msgs received
-				// 	tokenMsg := msg.message.(TokenMessage)
-				// 	totalTokens += tokenMsg.numTokens
-				// }
-				// log.Printf("[MJF] Snapshot %v. Server %v done: num tokens = %v, msgs received = %v\n", snapshotId, server.Id, snapshot.TokensInSnapshot, totalTokens)
 			}
 	}
 }
@@ -175,7 +167,7 @@ func (server *Server) StartSnapshot(snapshotId int) {
 	tokensInSnapshot := server.Tokens
 	msgsRecvd := make([]*SnapshotMessage, 0)
 	isRecordingLink := NewSyncMap()
-	for _, serverId := range getSortedKeys(server.inboundLinks) {
+	for serverId, _ := range server.inboundLinks {
 		isRecordingLink.Store(serverId, true)
 	}
 	linksDoneRecording := 0

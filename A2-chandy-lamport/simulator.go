@@ -125,7 +125,7 @@ func (sim *Simulator) StartSnapshot(serverId string) {
 	//
 	// (See CollectSnapshot() for how this is used)
 	isDone := NewSyncMap()
-	for _, serverId := range getSortedKeys(sim.servers) {
+	for serverId, _ := range sim.servers {
 		ch := make(chan bool, 1)
 		isDone.Store(serverId, ch)
 	}
@@ -171,7 +171,7 @@ func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 	//
 	// Pulling a value off a server's chan indicates that it's done
 	// (NotifySnapshotComplete() puts these values on the chan.)
-	for _, serverId := range getSortedKeys(sim.servers) {
+	for serverId, _ := range sim.servers {
 		val, ok := serverStats.isDone.Load(serverId)
 		checkOk(ok, "Error: serverStats.isDone.Load() failed")
 		ch := val.(chan bool)
@@ -183,9 +183,7 @@ func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 	// Collect global snapshot from local snapshots of each server
 	tokensByServerId := make(map[string]int)
 	messagesInTransit := make([]*SnapshotMessage, 0)
-	for _, serverId := range getSortedKeys(sim.servers) {
-		server := sim.servers[serverId]
-
+	for serverId, server := range sim.servers {
 		// Get server's local snapshot for this snapshot id
 		val, ok := server.snapshots.Load(snapshotId)
 		checkOk(ok, "Error: server.snapshots.Load() failed")

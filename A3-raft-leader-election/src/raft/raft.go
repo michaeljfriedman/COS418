@@ -17,13 +17,22 @@ package raft
 //   in the same server.
 //
 
-import "sync"
 import "labrpc"
+import "sync"
+import "time"
 
 // import "bytes"
 // import "encoding/gob"
 
+// Leader statuses
+const Leader = 0
+const Candidate = 1
+const Follower = 2
 
+// Election outcomes (relative to this server)
+const Won = 0
+const Lost = 1
+const Timeout = 2
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -50,6 +59,30 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// General attributes
+	// Refer to paper for any uncommented attributes
+	currentTerm   int
+	votedFor      int
+	log           []*LogEntry
+	commitIndex   int
+	lastApplied   int
+	nextIndex     []int
+	matchIndex    []int
+
+	// Attributes elections
+	leaderStatus    int         // Leader, Candidate, or Follower
+	heartbeatTimer  *time.Timer // time until I consider leader dead
+	electionTimer   *time.Timer // time until I restart an election
+	electionOutcome chan int    // Won, Lost, or Timeout
+	numVotes        int
+}
+
+//
+// A log entry
+//
+type LogEntry struct {
+	command interface{}
+	term    int
 }
 
 // return currentTerm and whether this server
@@ -95,16 +128,24 @@ func (rf *Raft) readPersist(data []byte) {
 
 //
 // example RequestVote RPC arguments structure.
+// See paper for reference
 //
 type RequestVoteArgs struct {
 	// Your data here.
+	term         int
+	candidateId  int
+	lastLogIndex int
+	lastLogTerm  int
 }
 
 //
 // example RequestVote RPC reply structure.
+// See paper for reference
 //
 type RequestVoteReply struct {
 	// Your data here.
+	term        int
+	voteGranted bool
 }
 
 //
@@ -134,6 +175,23 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
+}
+
+
+
+//
+// An AppendEntries message (see paper for reference)
+// Acts as a heartbeat message in this assignment
+//
+type AppendEntries struct {
+	term int
+}
+
+//
+// AppendEntries RPC handler
+//
+func (rf *Raft) AppendEntries(args AppendEntries) {
+
 }
 
 

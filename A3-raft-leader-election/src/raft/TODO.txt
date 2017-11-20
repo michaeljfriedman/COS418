@@ -7,11 +7,11 @@ Part 1: Data Types
 
 
 Part 2: Basic/non-election methods
-- Make()
-- WaitForLeaderToDie()
-- Start()
-- GetState()
-- DoConsensus()  <-- skeleton
+* Make()
+* WaitForLeaderToDie()
+* Start()
+* GetState()
+* DoConsensus()  <-- skeleton
 
 
 Part 3: Election methods

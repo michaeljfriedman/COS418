@@ -18,6 +18,7 @@ package raft
 //
 
 import "labrpc"
+import "math/rand"
 import "sync"
 import "time"
 
@@ -33,6 +34,10 @@ const Follower = 2
 const Won = 0
 const Lost = 1
 const Timeout = 2
+
+// Set votedFor to NoOne to indicate no vote granted yet in an
+// election
+const NoOne = -1
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -60,20 +65,21 @@ type Raft struct {
 	// state a Raft server must maintain.
 
 	// General attributes
-	// Refer to paper for any uncommented attributes
+	// Refer to paper section 5 for any uncommented attributes
 	currentTerm   int
-	votedFor      int
+	votedFor      int  // server id, or NoOne
 	log           []*LogEntry
 	commitIndex   int
 	lastApplied   int
 	nextIndex     []int
 	matchIndex    []int
 
-	// Attributes elections
+	// Attributes for elections
 	leaderStatus    int         // Leader, Candidate, or Follower
 	heartbeatTimer  *time.Timer // time until I consider leader dead
 	electionTimer   *time.Timer // time until I restart an election
-	electionOutcome chan int    // Won, Lost, or Timeout
+	electionOutcome chan int    // Won, Lost, or Timeout. Use chan so reading will
+	                            // block until an election has ended
 	numVotes        int
 }
 
@@ -92,6 +98,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here.
+	term = rf.currentTerm
+	isleader = (rf.leaderStatus == Leader)
+
 	return term, isleader
 }
 
@@ -124,11 +133,39 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
+//------------------------------------------------------------------------------
 
+// Leader election (data types/functions)
+
+//
+// Helper function to generate a timer with a random time
+// interval
+//
+func randomTimer() *time.Timer {
+	minMillisecs := 150
+	maxMillisecs := 300
+
+	randMillisecs := minMillisecs + rand.Intn(maxMillisecs - minMillisecs)
+	return time.NewTimer(time.Millisecond * time.Duration(randMillisecs))
+}
+
+//
+// Start a timer for heartbeat messages from the leader. When the timer expires,
+// assume the leader is dead, and start an election to run for leader.
+//
+// Outside this function, the timer should be stopped and this function should
+// be called again when a heartbeat is received.
+//
+func (rf *Raft) WaitForLeaderToDie() {
+	rf.heartbeatTimer = randomTimer()
+
+	<-rf.heartbeatTimer.C
+	go rf.RunForLeader()
+}
 
 //
 // example RequestVote RPC arguments structure.
-// See paper for reference
+// See paper section 5.2 for reference
 //
 type RequestVoteArgs struct {
 	// Your data here.
@@ -140,7 +177,7 @@ type RequestVoteArgs struct {
 
 //
 // example RequestVote RPC reply structure.
-// See paper for reference
+// See paper section 5.2 for reference
 //
 type RequestVoteReply struct {
 	// Your data here.
@@ -149,10 +186,36 @@ type RequestVoteReply struct {
 }
 
 //
-// example RequestVote RPC handler.
+// Determines whether I think a candidate is eligible to run for leader given
+// their RequestVoteArgs. Returns true/false if eligible/not eligible.
+//
+// A server is eligible if its log is as "up to date" as mine (see paper
+// section 5.4.1 for details).
+//
+func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
+	// Does candiate's log have a later term than mine? If so, their log is
+	// more up to date.
+	if args.lastLogTerm > rf.log[rf.commitIndex].term {
+		return true
+	}
+
+	// If terms are equal, then their log is more up to date if it's longer.
+	if args.lastLogTerm == rf.log[rf.commitIndex].term && args.lastLogIndex > rf.commitIndex {
+		return true
+	}
+
+	// Neither test passed. Candidate's log must not be as up to
+	return false
+}
+
+//
+// Handles a RequestVote message from a candidate. I grant a vote
+// for the candidate if they are eligible to run (see canBeLeader()) and
+// if I have not yet voted in this term.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+	// TODO: Implement RequestVote()
 }
 
 //
@@ -180,7 +243,7 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 
 
 //
-// An AppendEntries message (see paper for reference)
+// An AppendEntries message (see paper section 5 for reference)
 // Acts as a heartbeat message in this assignment
 //
 type AppendEntries struct {
@@ -191,9 +254,21 @@ type AppendEntries struct {
 // AppendEntries RPC handler
 //
 func (rf *Raft) AppendEntries(args AppendEntries) {
-
+	// TODO: Implement AppendEntries()
 }
 
+//
+// Start a new election, and run for leader.
+// See paper section 5.2 for reference.
+//
+func (rf *Raft) RunForLeader() {
+	// TODO: Implement RunForLeader()
+}
+
+
+//------------------------------------------------------------------------------
+
+// Logging/executing commands and leader-follower consensus
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -209,12 +284,23 @@ func (rf *Raft) AppendEntries(args AppendEntries) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	// Do not accept commands if not the leader
+	if rf.leaderStatus != Leader {
+		return -1, -1, false
+	}
+
+	// Start a consensus procedure on the command
+	go rf.DoConsensus(command)
+	return rf.commitIndex + 1, rf.currentTerm, true
+}
 
 
-	return index, term, isLeader
+//
+// Logs the given command and runs the consensus protocol to replicate
+// the log at followers.
+//
+func (rf *Raft) DoConsensus(command interface{}) {
+	// TODO: Implement DoConsensus()
 }
 
 //
@@ -246,6 +332,28 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 
 	// Your initialization code here.
+
+	// Initialize random number generator (for getting random timer intervals)
+	rand.Seed(time.Now().UnixNano())
+
+	// Initialize general attributes of the server
+	rf.currentTerm = 0
+	rf.votedFor = NoOne
+	rf.log = make([]*LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+
+	// Initialize attributes for elections
+	rf.leaderStatus = Follower
+	rf.heartbeatTimer = nil   // start timer when it's needed
+	rf.electionTimer = nil    // start timer when it's needed
+	rf.electionOutcome = make(chan int, 1)
+	rf.numVotes = 0
+
+	// Ready for heartbeat messages
+	go rf.WaitForLeaderToDie()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())

@@ -215,7 +215,14 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-	// TODO: Implement RequestVote()
+	if rf.canBeLeader(args) && args.term > rf.currentTerm && rf.votedFor == NoOne {
+		rf.votedFor = args.candidateId
+		reply.voteGranted = true
+	} else {
+		reply.voteGranted = false
+	}
+
+	reply.term = args.term
 }
 
 //
@@ -251,10 +258,29 @@ type AppendEntries struct {
 }
 
 //
-// AppendEntries RPC handler
+// AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
+// I step down to the caller (new leader). If I'm a candidate, I declare
+// that I've lost the election to the caller (new leader). If I'm a follower,
+// just note the heartbeat to mean the leader is still alive.
 //
 func (rf *Raft) AppendEntries(args AppendEntries) {
-	// TODO: Implement AppendEntries()
+	if args.term >= rf.currentTerm {
+		// Update my term
+		rf.currentTerm = args.term
+
+		if rf.leaderStatus == Leader {
+			// I step down to new leader
+			rf.leaderStatus = Follower
+		} else if rf.leaderStatus == Candidate {
+			// I lost
+			rf.electionOutcome <- Lost
+		} else if rf.leaderStatus == Follower {
+			// Reset heartbeat timer for leader
+			rf.heartbeatTimer.Stop()
+		}
+
+		go rf.WaitForLeaderToDie()
+	}
 }
 
 //

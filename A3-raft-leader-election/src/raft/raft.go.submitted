@@ -18,18 +18,12 @@ package raft
 //
 
 import "labrpc"
-import "log"
 import "math/rand"
 import "sync"
 import "time"
 
 // import "bytes"
 // import "encoding/gob"
-
-// DEBUG
-// Set this debug flag to true to print out useful log statements during
-// leader election.
-const debug = true
 
 // Leader statuses
 const Leader = 0
@@ -73,20 +67,19 @@ type Raft struct {
 
 	// General attributes
 	// Refer to paper section 5 for any uncommented attributes
-	currentTerm   int
-	votedFor      int  // server id, or NoOne
-	log           []*LogEntry
-	commitIndex   int
-	lastApplied   int
-	nextIndex     []int
-	matchIndex    []int
+	currentTerm int
+	votedFor    int // server id, or NoOne
+	log         []*LogEntry
+	commitIndex int
+	lastApplied int
+	nextIndex   []int
+	matchIndex  []int
 
 	// Attributes for elections
 	leaderStatus    int         // Leader, Candidate, or Follower
 	heartbeatTimer  *time.Timer // time until I consider leader dead
 	electionTimer   *time.Timer // time until I restart an election
-	electionOutcome chan int    // Won, Lost, Timeout, or Stale. Use chan so
-	                            // reading will block until an election has ended
+	electionOutcome chan int    // Won, Lost, Timeout, or Stale. Use chan so reading will block until an election has ended
 	numVotes        int
 }
 
@@ -139,7 +132,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// d.Decode(&rf.yyy)
 }
 
-
 //------------------------------------------------------------------------------
 
 // Leader election (data types/functions)
@@ -152,7 +144,7 @@ func randomTimer() *time.Timer {
 	minMillisecs := 150
 	maxMillisecs := 300
 
-	randMillisecs := minMillisecs + rand.Intn(maxMillisecs - minMillisecs)
+	randMillisecs := minMillisecs + rand.Intn(maxMillisecs-minMillisecs)
 	return time.NewTimer(time.Millisecond * time.Duration(randMillisecs))
 }
 
@@ -179,12 +171,6 @@ func (rf *Raft) waitForLeaderToDie() {
 	rf.heartbeatTimer = randomTimer()
 
 	<-rf.heartbeatTimer.C
-
-	// DEBUG
-	if debug {
-		log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
-	}
-
 	if rf.votedFor == NoOne {
 		go rf.runForLeader()
 	}
@@ -210,8 +196,6 @@ func (rf *Raft) sendPeriodicHeartbeats() {
 		<-timer.C
 	}
 }
-
-
 
 //
 // example RequestVote RPC arguments structure.
@@ -327,30 +311,14 @@ func (rf *Raft) requestVoteFrom(server int) {
 		return
 	}
 
-	// DEBUG
-	if debug {
-		log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
-	}
-
 	// Process reply. If applicable, add a vote for me and check if I won
 	if rf.leaderStatus == Candidate && reply.Term == rf.currentTerm && reply.VoteGranted {
-		// DEBUG
-		if debug {
-			log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
-		}
-
 		rf.numVotes++
-		if rf.numVotes == (len(rf.peers) / 2) + 1 {  // majority vote
+		if rf.numVotes == (len(rf.peers)/2)+1 { // majority vote
 			rf.electionOutcome <- Won
-		}
-	} else { // DEBUG
-		if debug {
-			log.Printf("Term %d: %d did not use vote reply from or was denied by %d\n", rf.currentTerm, rf.me, server)
 		}
 	}
 }
-
-
 
 //
 // An AppendEntries message (see paper section 5 for reference)
@@ -366,7 +334,7 @@ type AppendEntriesArgs struct {
 // have replies, but it must be defined for the RPC library to recognize
 // AppendEntries() as a valid RPC.
 //
-type AppendEntriesReply struct {}
+type AppendEntriesReply struct{}
 
 //
 // AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
@@ -416,8 +384,6 @@ func (rf *Raft) sendHeartbeatTo(server int) {
 	rf.sendAppendEntries(server, args)
 }
 
-
-
 //
 // Start a new election, and run for leader.
 // See paper section 5.2 for reference.
@@ -441,11 +407,6 @@ func (rf *Raft) runForLeader() {
 	rf.numVotes++
 	rf.votedFor = rf.me
 
-	// DEBUG
-	if debug {
-		log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
-	}
-
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
 	rf.electionTimer = randomTimer()
@@ -467,11 +428,6 @@ func (rf *Raft) runForLeader() {
 		go rf.requestVoteFrom(peerId)
 	}
 
-	// DEBUG
-	if debug {
-		log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
-	}
-
 	//-------------------------------------
 
 	// Wait for and process election outcome (won, lost, or timeout)
@@ -487,11 +443,6 @@ func (rf *Raft) runForLeader() {
 		// Start sending periodic heartbeats to other servers to indicate
 		// that I'm their new leader
 		go rf.sendPeriodicHeartbeats()
-
-		// DEBUG
-		if debug {
-			log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
-		}
 	} else if outcome == Lost {
 		// I become follower
 		rf.electionTimer.Stop()
@@ -508,7 +459,6 @@ func (rf *Raft) runForLeader() {
 		rf.leaderStatus = Follower
 	}
 }
-
 
 //------------------------------------------------------------------------------
 
@@ -537,7 +487,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	go rf.doConsensus(command)
 	return rf.commitIndex + 1, rf.currentTerm, true
 }
-
 
 //
 // Logs the given command and runs the consensus protocol to replicate
@@ -583,7 +532,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Initialize general attributes of the server
 	rf.currentTerm = 0
 	rf.votedFor = NoOne
-	rf.log = make([]*LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
+	rf.log = make([]*LogEntry, 1) // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(peers))
@@ -591,8 +540,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Initialize attributes for elections
 	rf.leaderStatus = Follower
-	rf.heartbeatTimer = nil   // start timer when it's needed
-	rf.electionTimer = nil    // start timer when it's needed
+	rf.heartbeatTimer = nil // start timer when it's needed
+	rf.electionTimer = nil  // start timer when it's needed
 	rf.electionOutcome = make(chan int, 1)
 	rf.numVotes = 0
 
@@ -601,7 +550,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
 
 	return rf
 }

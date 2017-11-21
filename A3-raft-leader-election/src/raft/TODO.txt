@@ -47,3 +47,10 @@ Bugs
 * Test trial 92: In ReElection test, server 2 somehow thought he won the election in term 3 without getting majority vote
 
 -----------------------------------> Done 11/21/17 10am
+
+Wrap-up
+
+* Make non-public methods lowercase
+* Make a copy without debugging statements
+* go vet, gofmt
+* Submit

@@ -138,7 +138,7 @@ func (rf *Raft) readPersist(data []byte) {
 // Leader election (data types/functions)
 
 //
-// Helper function to generate a timer with a random time
+// Helper function. Generates and returns a timer with a random time
 // interval
 //
 func randomTimer() *time.Timer {
@@ -258,11 +258,117 @@ func (rf *Raft) AppendEntries(args AppendEntries) {
 }
 
 //
+// Calls the AppendEntries RPC on the provided server with args as
+// contents. Returns true if the RPC was delivered, or false if it wasn't.
+//
+func (rf *Raft) sendAppendEntries(server int, args AppendEntries) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, nil)
+	return ok
+}
+
+//
 // Start a new election, and run for leader.
 // See paper section 5.2 for reference.
 //
 func (rf *Raft) RunForLeader() {
-	// TODO: Implement RunForLeader()
+	// Special case - if I'm the only server, I just become leader
+	if len(rf.peers) == 1 {
+		rf.currentTerm += 1
+		rf.leaderStatus = Leader
+		return
+	}
+
+	//-------------------------------------
+
+	// Initiate the election from my perspective
+	rf.currentTerm += 1
+	rf.leaderStatus = Candidate
+	rf.numVotes = 0
+
+	// Vote for myself
+	rf.numVotes++
+	rf.votedFor = rf.me
+
+	// Start a timer for the election. If the timer expires, the election "timed
+	// out" (i.e. no winner)
+	rf.electionTimer = randomTimer()
+	go func() {
+		<-rf.electionTimer.C
+		rf.electionOutcome <- Timeout
+	}()
+
+	//-------------------------------------
+
+	// Request votes from each other server
+	for peerId, _ := range rf.peers {
+		// Skip me
+		if peerId == rf.me {
+			continue
+		}
+
+		// Request the vote and process the reply. Use separate goroutine
+		// for each server
+		go func() {
+			// Request vote
+			args := RequestVoteArgs{
+				rf.currentTerm,
+				rf.me,
+				rf.commitIndex,              // last log index
+				rf.log[rf.commitIndex].term, // last log term
+			}
+			reply := RequestVoteReply{}
+			ok := rf.sendRequestVote(peerId, args, &reply)
+
+			if !ok {
+				return
+			}
+
+			// Process reply. If applicable, add a vote for me and check if I won
+			if rf.leaderStatus == Candidate && reply.term == rf.currentTerm && reply.voteGranted {
+				rf.numVotes++
+				if rf.numVotes >= (len(rf.peers) / 2) + 1 {  // majority vote
+					rf.electionOutcome <- Won
+				}
+			}
+		}()
+	}
+
+	//-------------------------------------
+
+	// Wait for and process election outcome (won, lost, or timeout)
+	outcome := <-rf.electionOutcome
+	if outcome == Won {
+		// I become leader
+		rf.electionTimer.Stop()
+		rf.leaderStatus = Leader
+
+		// Reset who I voted for
+		rf.votedFor = NoOne
+
+		// Notify other servers that I'm their new leader
+		for peerId, _ := range rf.peers {
+			// Skip me
+			if peerId == rf.me {
+				continue
+			}
+
+			// Send notification, using separate goroutine for each server
+			go func() {
+				args := AppendEntries{rf.currentTerm}
+				rf.sendAppendEntries(peerId, args)
+			}()
+		}
+	} else if outcome == Lost {
+		// I become follower
+		rf.electionTimer.Stop()
+		rf.leaderStatus = Follower
+
+		// Reset who I voted for
+		rf.votedFor = NoOne
+	} else if outcome == Timeout {
+		// Restart election
+		go rf.RunForLeader()
+	}
 }
 
 

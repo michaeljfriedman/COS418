@@ -15,6 +15,6 @@ Part 2: Basic/non-election methods
 
 
 Part 3: Election methods
-- RunForLeader()
+* RunForLeader()
 - RequestVote()
 - AppendEntries()

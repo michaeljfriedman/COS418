@@ -20,3 +20,22 @@ Part 3: Election methods
 * AppendEntries()
 
 -----------------------------------> Done 11/20/17
+
+Bugs
+
+* RPCs not working
+* RequestVote() and AppendEntries() RPCs only call to server 2, and election is never won
+  * Fix RequestVote RPCs so they call to different servers (they are currently all going to same server)
+  * Fix no one wins election
+    * Have determined from [3] that a candidate is receiving vote replies from all servers (see err.txt).
+    * Check that servers are actually granting votes for the candidate
+    * Election corner cases:
+      * 1: Make sure term & votedFor are in sync, so that if I vote for someone, I can't vote again unless the election is for a later term
+      * 2: If there's a re-election, it's possible for two candidates to be running in different terms. Add another possible election outcome for "stale election", which happens when a server realizes he's running in an outdated election. In this case he should stop his candidacy and vote for whoever he gets a request from in the new election.
+    * Same problem with RPCs again (not going to different servers), but this time for AppendEntries
+
+-----------------------------------> Done 11/21/17 2am
+
+Bugs
+
+- Leader does not send periodic heartbeats to other servers

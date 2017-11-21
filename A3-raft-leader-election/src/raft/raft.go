@@ -18,6 +18,7 @@ package raft
 //
 
 import "labrpc"
+import "log"
 import "math/rand"
 import "sync"
 import "time"
@@ -34,6 +35,7 @@ const Follower = 2
 const Won = 0
 const Lost = 1
 const Timeout = 2
+const Stale = 3
 
 // Set votedFor to NoOne to indicate no vote granted yet in an
 // election
@@ -78,8 +80,8 @@ type Raft struct {
 	leaderStatus    int         // Leader, Candidate, or Follower
 	heartbeatTimer  *time.Timer // time until I consider leader dead
 	electionTimer   *time.Timer // time until I restart an election
-	electionOutcome chan int    // Won, Lost, or Timeout. Use chan so reading will
-	                            // block until an election has ended
+	electionOutcome chan int    // Won, Lost, Timeout, or Stale. Use chan so
+	                            // reading will block until an election has ended
 	numVotes        int
 }
 
@@ -150,8 +152,20 @@ func randomTimer() *time.Timer {
 }
 
 //
+// Returns the term of the last committed log entry, or 0 if there are
+// no log entries.
+//
+func (rf *Raft) lastLogTerm() int {
+	if rf.commitIndex == 0 {
+		return 0
+	}
+	return rf.log[rf.commitIndex].term
+}
+
+//
 // Start a timer for heartbeat messages from the leader. When the timer expires,
-// assume the leader is dead, and start an election to run for leader.
+// assume the leader is dead, and run for the new leader if I have not yet
+// voted for a new one.
 //
 // Outside this function, the timer should be stopped and this function should
 // be called again when a heartbeat is received.
@@ -160,7 +174,13 @@ func (rf *Raft) WaitForLeaderToDie() {
 	rf.heartbeatTimer = randomTimer()
 
 	<-rf.heartbeatTimer.C
-	go rf.RunForLeader()
+
+	// DEBUG:
+	log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
+
+	if rf.votedFor == NoOne {
+		go rf.RunForLeader()
+	}
 }
 
 //
@@ -169,10 +189,10 @@ func (rf *Raft) WaitForLeaderToDie() {
 //
 type RequestVoteArgs struct {
 	// Your data here.
-	term         int
-	candidateId  int
-	lastLogIndex int
-	lastLogTerm  int
+	Term         int
+	CandidateId  int
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -181,8 +201,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here.
-	term        int
-	voteGranted bool
+	Term        int
+	VoteGranted bool
 }
 
 //
@@ -195,12 +215,12 @@ type RequestVoteReply struct {
 func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 	// Does candiate's log have a later term than mine? If so, their log is
 	// more up to date.
-	if args.lastLogTerm > rf.log[rf.commitIndex].term {
+	if args.LastLogTerm > rf.lastLogTerm() {
 		return true
 	}
 
 	// If terms are equal, then their log is more up to date if it's longer.
-	if args.lastLogTerm == rf.log[rf.commitIndex].term && args.lastLogIndex > rf.commitIndex {
+	if args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.commitIndex {
 		return true
 	}
 
@@ -209,20 +229,34 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 }
 
 //
-// Handles a RequestVote message from a candidate. I grant a vote
-// for the candidate if they are eligible to run (see canBeLeader()) and
+// Handles a RequestVote message from a candidate. I grant a vote for the
+// candidate if they're running in a newer election than I am (if I also think
+// I'm a candidate), or if they are eligible to run (see canBeLeader()) and
 // if I have not yet voted in this term.
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-	if rf.canBeLeader(args) && args.term > rf.currentTerm && rf.votedFor == NoOne {
-		rf.votedFor = args.candidateId
-		reply.voteGranted = true
-	} else {
-		reply.voteGranted = false
-	}
 
-	reply.term = args.term
+	// DEBUG
+	// canRun := rf.canBeLeader(args)
+	// log.Printf("Term %v: %v received vote req from %v. (canBeLeader = %v, election term = %v, votedFor = %v)\n", rf.currentTerm, rf.me, args.CandidateId, canRun, args.Term, rf.votedFor)
+
+	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
+		// I'm running in an outdated election. I stop my outdated candidacy and
+		// vote for you (the caller) in the new election.
+		rf.electionOutcome <- Stale
+		rf.currentTerm = args.Term
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	} else if rf.canBeLeader(args) && args.Term > rf.currentTerm && rf.votedFor == NoOne {
+		// You (the caller) are eligible to run and I haven't voted yet in this
+		// election, so I vote for you.
+		rf.currentTerm = args.Term
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	} else {
+		reply.VoteGranted = false
+	}
 }
 
 //
@@ -247,15 +281,59 @@ func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *Request
 	return ok
 }
 
+//
+// Request a vote from the given server and processs the reply.
+//
+func (rf *Raft) requestVoteFrom(server int) {
+	// Request vote
+	args := RequestVoteArgs{
+		rf.currentTerm,
+		rf.me,
+		rf.commitIndex,   // last log index
+		rf.lastLogTerm(), // last log term
+	}
+	reply := RequestVoteReply{
+		rf.currentTerm,
+		false,
+	}
+	ok := rf.sendRequestVote(server, args, &reply)
+
+	if !ok {
+		return
+	}
+
+	// DEBUG
+	log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
+
+	// Process reply. If applicable, add a vote for me and check if I won
+	if rf.leaderStatus == Candidate && reply.Term == rf.currentTerm && reply.VoteGranted {
+		// DEBUG
+		log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
+
+		rf.numVotes++
+		if rf.numVotes >= (len(rf.peers) / 2) + 1 {  // majority vote
+			rf.electionOutcome <- Won
+		}
+	}
+}
+
 
 
 //
 // An AppendEntries message (see paper section 5 for reference)
 // Acts as a heartbeat message in this assignment
 //
-type AppendEntries struct {
-	term int
+type AppendEntriesArgs struct {
+	Term int
 }
+
+//
+// A reply to an AppendEntries message.
+// Note that this is not actually used, since AppendEntries messages do not
+// have replies, but it must be defined for the RPC library to recognize
+// AppendEntries() as a valid RPC.
+//
+type AppendEntriesReply struct {}
 
 //
 // AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
@@ -263,20 +341,24 @@ type AppendEntries struct {
 // that I've lost the election to the caller (new leader). If I'm a follower,
 // just note the heartbeat to mean the leader is still alive.
 //
-func (rf *Raft) AppendEntries(args AppendEntries) {
-	if args.term >= rf.currentTerm {
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term >= rf.currentTerm {
 		// Update my term
-		rf.currentTerm = args.term
+		rf.currentTerm = args.Term
 
 		if rf.leaderStatus == Leader {
 			// I step down to new leader
 			rf.leaderStatus = Follower
+			rf.votedFor = NoOne
 		} else if rf.leaderStatus == Candidate {
 			// I lost
 			rf.electionOutcome <- Lost
 		} else if rf.leaderStatus == Follower {
 			// Reset heartbeat timer for leader
 			rf.heartbeatTimer.Stop()
+
+			// Since this may also be the result of an election, reset who I voted for
+			rf.votedFor = NoOne
 		}
 
 		go rf.WaitForLeaderToDie()
@@ -287,9 +369,18 @@ func (rf *Raft) AppendEntries(args AppendEntries) {
 // Calls the AppendEntries RPC on the provided server with args as
 // contents. Returns true if the RPC was delivered, or false if it wasn't.
 //
-func (rf *Raft) sendAppendEntries(server int, args AppendEntries) bool {
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs) bool {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, nil)
 	return ok
+}
+
+//
+// Sends a heartbeat message to the specified server. Should only be called
+// by the leader.
+//
+func (rf *Raft) sendHeartbeatTo(server int) {
+	args := AppendEntriesArgs{rf.currentTerm}
+	rf.sendAppendEntries(server, args)
 }
 
 //
@@ -315,6 +406,9 @@ func (rf *Raft) RunForLeader() {
 	rf.numVotes++
 	rf.votedFor = rf.me
 
+	// DEBUG
+	log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
+
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
 	rf.electionTimer = randomTimer()
@@ -332,32 +426,12 @@ func (rf *Raft) RunForLeader() {
 			continue
 		}
 
-		// Request the vote and process the reply. Use separate goroutine
-		// for each server
-		go func() {
-			// Request vote
-			args := RequestVoteArgs{
-				rf.currentTerm,
-				rf.me,
-				rf.commitIndex,              // last log index
-				rf.log[rf.commitIndex].term, // last log term
-			}
-			reply := RequestVoteReply{}
-			ok := rf.sendRequestVote(peerId, args, &reply)
-
-			if !ok {
-				return
-			}
-
-			// Process reply. If applicable, add a vote for me and check if I won
-			if rf.leaderStatus == Candidate && reply.term == rf.currentTerm && reply.voteGranted {
-				rf.numVotes++
-				if rf.numVotes >= (len(rf.peers) / 2) + 1 {  // majority vote
-					rf.electionOutcome <- Won
-				}
-			}
-		}()
+		// Request the vote. Use separate goroutine for each server
+		go rf.requestVoteFrom(peerId)
 	}
+
+	// DEBUG
+	log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
 
 	//-------------------------------------
 
@@ -379,11 +453,11 @@ func (rf *Raft) RunForLeader() {
 			}
 
 			// Send notification, using separate goroutine for each server
-			go func() {
-				args := AppendEntries{rf.currentTerm}
-				rf.sendAppendEntries(peerId, args)
-			}()
+			go rf.sendHeartbeatTo(peerId)
 		}
+
+		// DEBUG:
+		log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
 	} else if outcome == Lost {
 		// I become follower
 		rf.electionTimer.Stop()
@@ -394,6 +468,10 @@ func (rf *Raft) RunForLeader() {
 	} else if outcome == Timeout {
 		// Restart election
 		go rf.RunForLeader()
+	} else if outcome == Stale {
+		// I realized I am running in an outdated election. Stop running.
+		rf.electionTimer.Stop()
+		rf.leaderStatus = Follower
 	}
 }
 

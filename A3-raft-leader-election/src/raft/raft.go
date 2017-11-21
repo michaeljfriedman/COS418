@@ -26,6 +26,11 @@ import "time"
 // import "bytes"
 // import "encoding/gob"
 
+// DEBUG
+// Set this debug flag to true to print out useful log statements during
+// leader election.
+const debug = true
+
 // Leader statuses
 const Leader = 0
 const Candidate = 1
@@ -175,13 +180,38 @@ func (rf *Raft) WaitForLeaderToDie() {
 
 	<-rf.heartbeatTimer.C
 
-	// DEBUG:
-	log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
+	// DEBUG
+	if debug {
+		log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
+	}
 
 	if rf.votedFor == NoOne {
 		go rf.RunForLeader()
 	}
 }
+
+//
+// As leader, sends heartbeats periodically to other servers to let them
+// know I'm still alive.
+//
+func (rf *Raft) sendPeriodicHeartbeats() {
+	intervalMillisecs := 30
+	for rf.leaderStatus == Leader {
+		for peerId, _ := range rf.peers {
+			// Skip me
+			if peerId == rf.me {
+				continue
+			}
+
+			go rf.sendHeartbeatTo(peerId)
+		}
+
+		timer := time.NewTimer(time.Millisecond * time.Duration(intervalMillisecs))
+		<-timer.C
+	}
+}
+
+
 
 //
 // example RequestVote RPC arguments structure.
@@ -236,11 +266,6 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-
-	// DEBUG
-	// canRun := rf.canBeLeader(args)
-	// log.Printf("Term %v: %v received vote req from %v. (canBeLeader = %v, election term = %v, votedFor = %v)\n", rf.currentTerm, rf.me, args.CandidateId, canRun, args.Term, rf.votedFor)
-
 	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
 		// I'm running in an outdated election. I stop my outdated candidacy and
 		// vote for you (the caller) in the new election.
@@ -303,16 +328,24 @@ func (rf *Raft) requestVoteFrom(server int) {
 	}
 
 	// DEBUG
-	log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
+	if debug {
+		log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
+	}
 
 	// Process reply. If applicable, add a vote for me and check if I won
 	if rf.leaderStatus == Candidate && reply.Term == rf.currentTerm && reply.VoteGranted {
 		// DEBUG
-		log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
+		if debug {
+			log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
+		}
 
 		rf.numVotes++
 		if rf.numVotes >= (len(rf.peers) / 2) + 1 {  // majority vote
 			rf.electionOutcome <- Won
+		}
+	} else { // DEBUG
+		if debug {
+			log.Printf("Term %d: %d did not use vote reply from or was denied by %d\n", rf.currentTerm, rf.me, server)
 		}
 	}
 }
@@ -383,6 +416,8 @@ func (rf *Raft) sendHeartbeatTo(server int) {
 	rf.sendAppendEntries(server, args)
 }
 
+
+
 //
 // Start a new election, and run for leader.
 // See paper section 5.2 for reference.
@@ -407,7 +442,9 @@ func (rf *Raft) RunForLeader() {
 	rf.votedFor = rf.me
 
 	// DEBUG
-	log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
+	if debug {
+		log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
+	}
 
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
@@ -431,7 +468,9 @@ func (rf *Raft) RunForLeader() {
 	}
 
 	// DEBUG
-	log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
+	if debug {
+		log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
+	}
 
 	//-------------------------------------
 
@@ -445,19 +484,14 @@ func (rf *Raft) RunForLeader() {
 		// Reset who I voted for
 		rf.votedFor = NoOne
 
-		// Notify other servers that I'm their new leader
-		for peerId, _ := range rf.peers {
-			// Skip me
-			if peerId == rf.me {
-				continue
-			}
+		// Start sending periodic heartbeats to other servers to indicate
+		// that I'm their new leader
+		go rf.sendPeriodicHeartbeats()
 
-			// Send notification, using separate goroutine for each server
-			go rf.sendHeartbeatTo(peerId)
+		// DEBUG
+		if debug {
+			log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
 		}
-
-		// DEBUG:
-		log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
 	} else if outcome == Lost {
 		// I become follower
 		rf.electionTimer.Stop()

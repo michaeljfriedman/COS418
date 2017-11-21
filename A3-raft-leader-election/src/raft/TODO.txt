@@ -38,4 +38,6 @@ Bugs
 
 Bugs
 
-- Leader does not send periodic heartbeats to other servers
+* Leader does not send periodic heartbeats to other servers
+
+-----------------------------------> Done 11/21/17 3am

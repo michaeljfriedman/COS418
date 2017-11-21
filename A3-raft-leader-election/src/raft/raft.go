@@ -340,7 +340,7 @@ func (rf *Raft) requestVoteFrom(server int) {
 		}
 
 		rf.numVotes++
-		if rf.numVotes >= (len(rf.peers) / 2) + 1 {  // majority vote
+		if rf.numVotes == (len(rf.peers) / 2) + 1 {  // majority vote
 			rf.electionOutcome <- Won
 		}
 	} else { // DEBUG

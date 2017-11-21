@@ -1,5 +1,5 @@
 #!/bin/bash
-# test.sh
+# test-once.sh
 # Author: Michael Friedman
 #
 # Runs tests for Raft leader election.

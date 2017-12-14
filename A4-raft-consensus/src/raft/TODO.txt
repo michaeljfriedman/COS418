@@ -17,7 +17,8 @@ Part I - Appending log entries and reaching consensus
 
 - Implement leader functions:
   * doConsensus()
-  - applyLogEntries()
+  * applyLogEntries()
+  - Interlude: if log is indexed from 1, make sure first commit works
   - sendAndResolveEntries()  (replaces sendAppendEntries)
   - sendPeriodicHeartbeats()
 

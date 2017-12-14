@@ -98,6 +98,7 @@ type Raft struct {
 	lastApplied   int
 	nextIndex     []int
 	matchIndex    []int
+	applyCh       chan ApplyMsg // send log entries to this channel to "apply" them
 }
 
 //
@@ -645,11 +646,35 @@ func (rf *Raft) doConsensus(command interface{}) {
 //
 func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	// DEBUG
+	oldLastApplied := rf.lastApplied
 	if debugConsensus {
-		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, rf.lastApplied, newCommitIndex)
+		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied, newCommitIndex)
 	}
 
-	// TODO: Implement applyLogEntries()
+	// Lock so that lastApplied and commitIndex can't be changed/read
+	// while applying entries
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Mark up to newCommitIndex as "committed"
+	rf.commitIndex = newCommitIndex
+
+	// Apply newly committed entries
+	for i := rf.lastApplied+1; i <= rf.commitIndex; i++ {
+		entry := rf.log[i]
+
+		applyMsg := ApplyMsg{}
+		applyMsg.Index = entry.Index
+		applyMsg.Command = entry.Command
+
+		rf.applyCh <- applyMsg
+	}
+	rf.lastAppled = rf.commitIndex
+
+	// DEBUG
+	if debugConsensus {
+		log.Printf("Term %v: %v (leader) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied, newCommitIndex)
+	}
 }
 
 
@@ -688,19 +713,22 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Initialize general attributes of the server
 	rf.currentTerm = 0
-	rf.votedFor = NoOne
-	rf.log = make([]*LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-	rf.nextIndex = make([]int, len(peers))
-	rf.matchIndex = make([]int, len(peers))
 
 	// Initialize attributes for elections
+	rf.votedFor = NoOne
 	rf.leaderStatus = Follower
 	rf.heartbeatTimer = nil   // start timer when it's needed
 	rf.electionTimer = nil    // start timer when it's needed
 	rf.electionOutcome = make(chan int, 1)
 	rf.numVotes = 0
+
+	// Initialize attributes for consensus
+	rf.log = make([]*LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
+	rf.commitIndex = 0
+	rf.lastApplied = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
+	rf.applyCh = applyCh
 
 	// Ready for heartbeat messages
 	go rf.waitForLeaderToDie()

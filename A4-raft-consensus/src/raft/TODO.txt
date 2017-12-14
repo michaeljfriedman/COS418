@@ -17,11 +17,11 @@ Part I - Appending log entries and reaching consensus
 
 * Interlude: if log is indexed from 1, make sure first commit works
 
-- Implement leader functions:
+* Implement leader functions:
   * doConsensus()
   * applyLogEntries()
   * sendAppendEntries()  (overwrites old sendAppendEntries)
-  - sendPeriodicHeartbeats()
+  * sendPeriodicHeartbeats()
 
 - Implement follower functions:
   - AppendEntries()

@@ -46,6 +46,9 @@ const Stale = 3
 // election
 const NoOne = -1
 
+// Consensus outcomes. "Stale" (defined above) is also a valid value.
+const Success = 0
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -71,31 +74,43 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+	// Many of these attributes are from the paper; most of them are uncommented
+	// since they are documented in section 5. I comment the ones I added.
+
 	// General attributes
-	// Refer to paper section 5 for any uncommented attributes
 	currentTerm   int
-	votedFor      int  // server id, or NoOne
-	log           []*LogEntry
-	commitIndex   int
-	lastApplied   int
-	nextIndex     []int
-	matchIndex    []int
 
 	// Attributes for elections
+	votedFor        int         // server id, or NoOne
 	leaderStatus    int         // Leader, Candidate, or Follower
 	heartbeatTimer  *time.Timer // time until I consider leader dead
 	electionTimer   *time.Timer // time until I restart an election
 	electionOutcome chan int    // Won, Lost, Timeout, or Stale. Use chan so
 	                            // reading will block until an election has ended
 	numVotes        int
+
+	// Attributes for logging/consensus
+	log           []*LogEntry
+	commitIndex   int
+	lastApplied   int
+	nextIndex     []int
+	matchIndex    []int
 }
 
 //
 // A log entry
 //
 type LogEntry struct {
+	// Attributes from paper
 	command interface{}
 	term    int
+
+	// Extra attributes
+	index         int         // index of this entry in the log
+	numReplicated int         // num servers that replicated this entry (<= majority)
+	pendingConsensus bool     // is this entry pending consensus?
+	consensusOutcome chan int // Success or Stale. Use chan so reading will block
+	                          // until consensus has been reached
 }
 
 // return currentTerm and whether this server
@@ -354,19 +369,31 @@ func (rf *Raft) requestVoteFrom(server int) {
 
 //
 // An AppendEntries message (see paper section 5 for reference)
-// Acts as a heartbeat message in this assignment
+// Has two roles:
+// - Leader tells followers to "append entries" to their logs
+// - Leader sends heartbeats to followers
 //
 type AppendEntriesArgs struct {
-	Term int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LeaderCommit int
+	Entries      []*LogEntry
 }
 
 //
-// A reply to an AppendEntries message.
-// Note that this is not actually used, since AppendEntries messages do not
-// have replies, but it must be defined for the RPC library to recognize
-// AppendEntries() as a valid RPC.
+// A reply to an AppendEntries message (see paper section 5 for reference)
 //
-type AppendEntriesReply struct {}
+// Quick overview:
+// A reply with Success = true indicates that the log entry(s) sent in the
+// corresponding Args are replicated/in sync on the replying server.
+// Success = false indicates that they are not.
+//
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
 
 //
 // AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,

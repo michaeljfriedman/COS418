@@ -1,0 +1,30 @@
+Part I - Appending log entries and reaching consensus
+-----------------------------------------------------
+
+- Implement data types
+  - Raft
+    - Lock-able commitIndex/lastApplied
+  - LogEntry
+  - AppendEntriesArgs
+  - AppendEntriesReply
+
+- Implement Start(), "when I become leader" (easy)
+
+- Implement leader functions:
+  - doConsensus()
+  - sendAndResolveEntries()
+  - applyLogEntries()
+  - sendPeriodicHeartbeats()
+
+- Implement follower functions:
+  - AppendEntries()
+
+
+Part II - Handling failures/persistence
+---------------------------------------
+
+
+
+
+Part III - Optimization
+-----------------------

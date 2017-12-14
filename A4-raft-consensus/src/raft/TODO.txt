@@ -16,9 +16,9 @@ Part I - Appending log entries and reaching consensus
 * Interlude: Make separate debug flag for leader election and consensus
 
 - Implement leader functions:
-  - doConsensus()
-  - sendAndResolveEntries()
+  * doConsensus()
   - applyLogEntries()
+  - sendAndResolveEntries()  (replaces sendAppendEntries)
   - sendPeriodicHeartbeats()
 
 - Implement follower functions:

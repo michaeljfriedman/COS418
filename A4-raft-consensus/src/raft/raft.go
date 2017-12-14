@@ -109,8 +109,8 @@ type LogEntry struct {
 	Term    int
 
 	// Extra attributes
-	Index         int         // index of this entry in the log
-	NumReplicated int         // num servers that replicated this entry (<= majority)
+	Index            int      // index of this entry in the log
+	NumReplications  int      // num servers that replicated this entry (<= majority)
 	PendingConsensus bool     // is this entry pending consensus?
 	ConsensusOutcome chan int // Success or Stale. Use chan so reading will block
 	                          // until consensus has been reached
@@ -584,9 +584,74 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // Logs the given command and runs the consensus protocol to replicate
 // the log at followers.
 //
+// By the time this terminates, the command has either been committed or
+// discarded or deletion.
+//
 func (rf *Raft) doConsensus(command interface{}) {
-	// TODO: Implement doConsensus()
+	newEntryIndex := len(rf.log)
+
+	// DEBUG
+	if debugConsensus {
+		log.Printf("Term %v: %v (leader) began consensus for entry #%v\n", rf.currentTerm, rf.me, newEntryIndex)
+	}
+
+	// Create new LogEntry and append it
+	newEntry := &LogEntry{
+		command,
+		rf.currentTerm,
+		newEntryIndex,
+		0,                 // numReplications
+		true,              // pendingConsensus
+		make(chan int, 1), // consensusOutcome
+	}
+	rf.log = append(rf.log, newEntry)
+
+	// DEBUG
+	if debugConsensus {
+		log.Printf("Term %v: %v (leader) added entry #%v to his log\n", rf.currentTerm, rf.me, newEntryIndex)
+	}
+
+	// Wait for consensus outcome
+	outcome := <-newEntry.consensusOutcome
+	if outcome == Success {
+		// Consensus was reached! I can commit/apply this entry
+		newEntry.pendingConsensus = false
+
+		// DEBUG
+		if debugConsensus {
+			log.Printf("Term %v: %v (leader) got consensus for entry #%v\n", rf.currentTerm, rf.me, newEntryIndex)
+		}
+
+		rf.mu.Lock() // ensure I don't read lastApplied *while* entries are being applied concurrently
+		if rf.lastApplied < newEntry.Index && !(newEntry.Term < rf.currentTerm) {
+			rf.mu.Unlock()
+			rf.applyLogEntries(newEntry.Index)
+		} else {
+			rf.mu.Unlock()
+		}
+	} else if outcome == Stale {
+		// Do nothing. If stale, this entry will be deleted soon anyway.
+	}
 }
+
+
+//
+// Applies all log entries not yet applied up through newCommitIndex
+// (inclusive). By the time this returns, all log entries are applied, and
+// lastApplied and commitIndex are both be equal to newCommitIndex.
+//
+// This function is atomic and concurrency-safe (i.e. two calls of it cannot be
+// running at the same time).
+//
+func (rf *Raft) applyLogEntries(newCommitIndex int) {
+	// DEBUG
+	if debugConsensus {
+		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, rf.lastApplied, newCommitIndex)
+	}
+
+	// TODO: Implement applyLogEntries()
+}
+
 
 //
 // the tester calls Kill() when a Raft instance won't

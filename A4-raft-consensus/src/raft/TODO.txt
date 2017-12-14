@@ -15,15 +15,17 @@ Part I - Appending log entries and reaching consensus
 
 * Interlude: Make separate debug flag for leader election and consensus
 
+* Interlude: if log is indexed from 1, make sure first commit works
+
 - Implement leader functions:
   * doConsensus()
   * applyLogEntries()
-  - Interlude: if log is indexed from 1, make sure first commit works
-  - sendAndResolveEntries()  (replaces sendAppendEntries)
+  * sendAppendEntries()  (overwrites old sendAppendEntries)
   - sendPeriodicHeartbeats()
 
 - Implement follower functions:
   - AppendEntries()
+  - logsMatchThrough()
 
 
 Part II - Handling failures/persistence

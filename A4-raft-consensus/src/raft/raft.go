@@ -112,7 +112,7 @@ type LogEntry struct {
 	// Extra attributes
 	Index            int      // index of this entry in the log
 	NumReplications  int      // num servers that replicated this entry (<= majority)
-	PendingConsensus bool     // is this entry pending consensus?
+	IsPendingConsensus bool   // is this entry pending consensus?
 	ConsensusOutcome chan int // Success or Stale. Use chan so reading will block
 	                          // until consensus has been reached
 }
@@ -184,6 +184,14 @@ func (rf *Raft) lastLogTerm() int {
 		return 0
 	}
 	return rf.log[rf.commitIndex].Term
+}
+
+//
+// Helper function. Returns the number of servers that makes exactly a
+// majority.
+//
+func (rf *Raft) majority() int {
+	return (len(rf.peers) / 2) + 1
 }
 
 //
@@ -359,7 +367,7 @@ func (rf *Raft) requestVoteFrom(server int) {
 		}
 
 		rf.numVotes++
-		if rf.numVotes == (len(rf.peers) / 2) + 1 {  // majority vote
+		if rf.numVotes == rf.majority() {
 			rf.electionOutcome <- Won
 		}
 	} else { // DEBUG
@@ -370,81 +378,12 @@ func (rf *Raft) requestVoteFrom(server int) {
 }
 
 
-
-//
-// An AppendEntries message (see paper section 5 for reference)
-// Has two roles:
-// - Leader tells followers to "append entries" to their logs
-// - Leader sends heartbeats to followers
-//
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	LeaderCommit int
-	Entries      []*LogEntry
-}
-
-//
-// A reply to an AppendEntries message (see paper section 5 for reference)
-//
-// Quick overview:
-// A reply with Success = true indicates that the log entry(s) sent in the
-// corresponding Args are replicated/in sync on the replying server.
-// Success = false indicates that they are not.
-//
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
-//
-// AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
-// I step down to the caller (new leader). If I'm a candidate, I declare
-// that I've lost the election to the caller (new leader). If I'm a follower,
-// just note the heartbeat to mean the leader is still alive.
-//
-func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args.Term >= rf.currentTerm {
-		// Update my term
-		rf.currentTerm = args.Term
-
-		if rf.leaderStatus == Leader {
-			// I step down to new leader
-			rf.leaderStatus = Follower
-			rf.votedFor = NoOne
-		} else if rf.leaderStatus == Candidate {
-			// I lost
-			rf.electionOutcome <- Lost
-		} else if rf.leaderStatus == Follower {
-			// Reset heartbeat timer for leader
-			rf.heartbeatTimer.Stop()
-
-			// Since this may also be the result of an election, reset who I voted for
-			rf.votedFor = NoOne
-		}
-
-		go rf.waitForLeaderToDie()
-	}
-}
-
-//
-// Calls the AppendEntries RPC on the provided server with args as
-// contents. Returns true if the RPC was delivered, or false if it wasn't.
-//
-func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, nil)
-	return ok
-}
-
 //
 // Sends a heartbeat message to the specified server. Should only be called
 // by the leader.
 //
 func (rf *Raft) sendHeartbeatTo(server int) {
-	args := AppendEntriesArgs{rf.currentTerm, 0, 0, 0, 0, nil}
-	rf.sendAppendEntries(server, args)
+	rf.sendAppendEntries(server)
 }
 
 
@@ -551,6 +490,163 @@ func (rf *Raft) runForLeader() {
 	}
 }
 
+//------------------------------------------------------------------------------
+
+// AppendEntries
+// (Overlaps into both elections and consensus)
+
+//
+// An AppendEntries message (see paper section 5 for reference)
+// Has two roles:
+// - Leader tells followers to "append entries" to their logs
+// - Leader sends heartbeats to followers
+//
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LeaderCommit int
+	Entries      []*LogEntry
+}
+
+//
+// A reply to an AppendEntries message (see paper section 5 for reference)
+//
+// Quick overview:
+// A reply with Success = true indicates that the log entry(s) sent in the
+// corresponding Args are replicated/in sync on the replying server.
+// Success = false indicates that they are not.
+//
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+//
+// AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
+// I step down to the caller (new leader). If I'm a candidate, I declare
+// that I've lost the election to the caller (new leader). If I'm a follower,
+// just note the heartbeat to mean the leader is still alive.
+//
+func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args.Term >= rf.currentTerm {
+		// Update my term
+		rf.currentTerm = args.Term
+
+		if rf.leaderStatus == Leader {
+			// I step down to new leader
+			rf.leaderStatus = Follower
+			rf.votedFor = NoOne
+		} else if rf.leaderStatus == Candidate {
+			// I lost
+			rf.electionOutcome <- Lost
+		} else if rf.leaderStatus == Follower {
+			// Reset heartbeat timer for leader
+			rf.heartbeatTimer.Stop()
+
+			// Since this may also be the result of an election, reset who I voted for
+			rf.votedFor = NoOne
+		}
+
+		go rf.waitForLeaderToDie()
+	}
+}
+
+//
+// Sends an AppendEntries message to the provided server. This serves as both
+// a heartbeat and an attempt to send necessary information to put the server's
+// log in sync with the sender's (i.e. the leader's).
+//
+// By the time this terminates, it is *not* guaranteed that the recipient's log
+// is in sync with the leader's - you may require another call. However, all
+// parameters for the next call are set in the first call, so you can just call
+// it again immediately if it's required. Also, as noted in the paper (section
+// 5.5), these messages are idempotent, so there's no harm in calling this
+// more times than is necessary.
+//
+func (rf *Raft) sendAppendEntries(server int) {
+	// Make args for message. Send entries from nextIndex to end (or empty
+	// if out of range)
+	nextIndex := rf.nextIndex[server]
+	var entries []*LogEntry
+	if nextIndex <= len(rf.log) - 1 {
+		entries = rf.log[nextIndex:]
+	}
+
+	prevLogIndex := nextIndex - 1
+	var prevLogTerm int
+	if prevLogIndex > 0 {
+		prevLogTerm = rf.log[prevLogIndex].Term
+	} else {
+		prevLogTerm = -1  // no entry here, so no term
+	}
+
+	// Make args for message
+	args := AppendEntriesArgs{
+		rf.currentTerm,
+		rf.me,
+		prevLogIndex,
+		prevLogTerm,
+		rf.commitIndex,
+		entries,
+	}
+
+	// Initialize empty reply
+	reply := &AppendEntriesReply{}
+
+	// DEBUG
+	if debugConsensus {
+		log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = %v\n", rf.currentTerm, rf.me, server, args.Entries)
+	}
+
+	// Send message, get reply
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+
+	if !ok {
+		// Server never replied. Just try again next call
+
+		// DEBUG
+		if debugConsensus {
+			log.Printf("Term %v: %v (leader) never got reply to AppendEntries from %v. Ignoring.\n", rf.currentTerm, rf.me, server)
+		}
+
+		return
+	}
+
+	// Process reply
+	if reply.Success {
+		// DEBUG
+		if debugConsensus {
+			log.Printf("Term %v: %v (leader) got success reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
+		}
+
+		// Reset nextIndex for that server
+		rf.nextIndex[server] = len(rf.log)
+
+		// Mark these entries replicated, if applicable
+		for _, entry := range args.Entries {
+			if entry.IsPendingConsensus && entry.Index > rf.matchIndex[server] /* not yet replicated on that server */ {
+				rf.matchIndex[server] = entry.Index
+
+				entry.NumReplications++
+				if entry.NumReplications == rf.majority() {
+					entry.ConsensusOutcome <- Success
+				}
+			}
+		}
+
+	} else /* failure */ {
+		// DEBUG
+		if debugConsensus {
+			log.Printf("Term %v: %v (leader) got failure reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
+		}
+
+		// Set nextIndex for next call
+		rf.nextIndex[server]--
+	}
+}
+
 
 //------------------------------------------------------------------------------
 
@@ -601,11 +697,14 @@ func (rf *Raft) doConsensus(command interface{}) {
 		command,
 		rf.currentTerm,
 		newEntryIndex,
-		0,                 // numReplications
-		true,              // pendingConsensus
-		make(chan int, 1), // consensusOutcome
+		0,                 // NumReplications
+		true,              // IsPendingConsensus
+		make(chan int, 1), // ConsensusOutcome
 	}
 	rf.log = append(rf.log, newEntry)
+
+	// Mark replicated on myself
+	newEntry.NumReplications++
 
 	// DEBUG
 	if debugConsensus {
@@ -614,15 +713,14 @@ func (rf *Raft) doConsensus(command interface{}) {
 
 	// Wait for consensus outcome
 	outcome := <-newEntry.ConsensusOutcome
+	newEntry.IsPendingConsensus = false
 	if outcome == Success {
-		// Consensus was reached! I can commit/apply this entry
-		newEntry.PendingConsensus = false
-
 		// DEBUG
 		if debugConsensus {
 			log.Printf("Term %v: %v (leader) got consensus for entry #%v\n", rf.currentTerm, rf.me, newEntryIndex)
 		}
 
+		// Consensus was reached! I can commit/apply this entry
 		rf.mu.Lock() // ensure I don't read lastApplied *while* entries are being applied concurrently
 		if rf.lastApplied < newEntry.Index && !(newEntry.Term < rf.currentTerm) {
 			rf.mu.Unlock()

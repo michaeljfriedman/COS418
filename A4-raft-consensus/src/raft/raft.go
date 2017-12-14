@@ -613,10 +613,10 @@ func (rf *Raft) doConsensus(command interface{}) {
 	}
 
 	// Wait for consensus outcome
-	outcome := <-newEntry.consensusOutcome
+	outcome := <-newEntry.ConsensusOutcome
 	if outcome == Success {
 		// Consensus was reached! I can commit/apply this entry
-		newEntry.pendingConsensus = false
+		newEntry.PendingConsensus = false
 
 		// DEBUG
 		if debugConsensus {
@@ -669,7 +669,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 
 		rf.applyCh <- applyMsg
 	}
-	rf.lastAppled = rf.commitIndex
+	rf.lastApplied = rf.commitIndex
 
 	// DEBUG
 	if debugConsensus {

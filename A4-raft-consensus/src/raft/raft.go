@@ -511,6 +511,12 @@ func (rf *Raft) runForLeader() {
 		// Reset who I voted for
 		rf.votedFor = NoOne
 
+		// Initialize vars I need to keep track of as leader (see section 5.3)
+		for peerId, _ := range rf.peers {
+			rf.nextIndex[peerId] = len(rf.log) // last log index + 1
+			rf.matchIndex[peerId] = 0
+		}
+
 		// Start sending periodic heartbeats to other servers to indicate
 		// that I'm their new leader
 		go rf.sendPeriodicHeartbeats()
@@ -539,7 +545,7 @@ func (rf *Raft) runForLeader() {
 
 //------------------------------------------------------------------------------
 
-// Logging/executing commands and leader-follower consensus
+// Logging/applying commands and leader-follower consensus
 
 //
 // the service using Raft (e.g. a k/v server) wants to start
@@ -562,7 +568,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Start a consensus procedure on the command
 	go rf.doConsensus(command)
-	return rf.commitIndex + 1, rf.currentTerm, true
+	return len(rf.log), rf.currentTerm, true
 }
 
 

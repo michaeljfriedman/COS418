@@ -1,6 +1,9 @@
 Part I - Appending log entries and reaching consensus
 -----------------------------------------------------
 
+>>> Write in debug print statements as you go!
+
+
 * Implement data types
   * Raft
     * Lock-able commitIndex/lastApplied (lock the whole Raft obj)
@@ -8,7 +11,7 @@ Part I - Appending log entries and reaching consensus
   * AppendEntriesArgs
   * AppendEntriesReply
 
-- Implement Start(), "when I become leader" (easy)
+* Implement Start(), "when I become leader" (easy)
 
 - Implement leader functions:
   - doConsensus()

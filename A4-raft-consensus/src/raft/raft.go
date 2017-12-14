@@ -29,7 +29,10 @@ import "time"
 // DEBUG
 // Set this debug flag to true to print out useful log statements during
 // leader election.
-const debug = true
+const debugElection = false
+
+// Set this debug flag to true for log statements during consensus
+const debugConsensus = true
 
 // Leader statuses
 const Leader = 0
@@ -102,14 +105,14 @@ type Raft struct {
 //
 type LogEntry struct {
 	// Attributes from paper
-	command interface{}
-	term    int
+	Command interface{}
+	Term    int
 
 	// Extra attributes
-	index         int         // index of this entry in the log
-	numReplicated int         // num servers that replicated this entry (<= majority)
-	pendingConsensus bool     // is this entry pending consensus?
-	consensusOutcome chan int // Success or Stale. Use chan so reading will block
+	Index         int         // index of this entry in the log
+	NumReplicated int         // num servers that replicated this entry (<= majority)
+	PendingConsensus bool     // is this entry pending consensus?
+	ConsensusOutcome chan int // Success or Stale. Use chan so reading will block
 	                          // until consensus has been reached
 }
 
@@ -179,7 +182,7 @@ func (rf *Raft) lastLogTerm() int {
 	if rf.commitIndex == 0 {
 		return 0
 	}
-	return rf.log[rf.commitIndex].term
+	return rf.log[rf.commitIndex].Term
 }
 
 //
@@ -196,7 +199,7 @@ func (rf *Raft) waitForLeaderToDie() {
 	<-rf.heartbeatTimer.C
 
 	// DEBUG
-	if debug {
+	if debugElection {
 		log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
 	}
 
@@ -343,14 +346,14 @@ func (rf *Raft) requestVoteFrom(server int) {
 	}
 
 	// DEBUG
-	if debug {
+	if debugElection {
 		log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
 	}
 
 	// Process reply. If applicable, add a vote for me and check if I won
 	if rf.leaderStatus == Candidate && reply.Term == rf.currentTerm && reply.VoteGranted {
 		// DEBUG
-		if debug {
+		if debugElection {
 			log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
 		}
 
@@ -359,7 +362,7 @@ func (rf *Raft) requestVoteFrom(server int) {
 			rf.electionOutcome <- Won
 		}
 	} else { // DEBUG
-		if debug {
+		if debugElection {
 			log.Printf("Term %d: %d did not use vote reply from or was denied by %d\n", rf.currentTerm, rf.me, server)
 		}
 	}
@@ -439,7 +442,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs) bool {
 // by the leader.
 //
 func (rf *Raft) sendHeartbeatTo(server int) {
-	args := AppendEntriesArgs{rf.currentTerm}
+	args := AppendEntriesArgs{rf.currentTerm, 0, 0, 0, 0, nil}
 	rf.sendAppendEntries(server, args)
 }
 
@@ -469,7 +472,7 @@ func (rf *Raft) runForLeader() {
 	rf.votedFor = rf.me
 
 	// DEBUG
-	if debug {
+	if debugElection {
 		log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
 	}
 
@@ -495,7 +498,7 @@ func (rf *Raft) runForLeader() {
 	}
 
 	// DEBUG
-	if debug {
+	if debugElection {
 		log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
 	}
 
@@ -522,7 +525,12 @@ func (rf *Raft) runForLeader() {
 		go rf.sendPeriodicHeartbeats()
 
 		// DEBUG
-		if debug {
+		if debugConsensus {
+			log.Printf("Term %v: %v is now leader\n", rf.currentTerm, rf.me)
+		}
+
+		// DEBUG
+		if debugElection {
 			log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
 		}
 	} else if outcome == Lost {

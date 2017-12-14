@@ -13,6 +13,8 @@ Part I - Appending log entries and reaching consensus
 
 * Implement Start(), "when I become leader" (easy)
 
+* Interlude: Make separate debug flag for leader election and consensus
+
 - Implement leader functions:
   - doConsensus()
   - sendAndResolveEntries()

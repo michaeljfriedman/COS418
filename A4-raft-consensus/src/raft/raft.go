@@ -524,10 +524,37 @@ type AppendEntriesReply struct {
 }
 
 //
+// Delete entries in the log from index `index` to the end. Return the
+// new log.
+//
+func (rf *Raft) deleteEntriesFrom(index int) []*LogEntry {
+	return rf.log[:index]
+}
+
+//
+// Returns true if this server's log matches the leader's up through
+// prevLogIndex, given prevLogTerm as well. False if not.
+//
+func (rf *Raft) logsMatchThrough(prevLogIndex int, prevLogTerm int) bool {
+	if prevLogIndex <= 0 { // base case 1
+		return true
+	} else if prevLogIndex > len(rf.log) - 1 { // base case 2
+		return false
+	} else {
+		// Normal case
+		return rf.log[prevLogIndex].Term == prevLogTerm
+	}
+}
+
+//
 // AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
 // I step down to the caller (new leader). If I'm a candidate, I declare
 // that I've lost the election to the caller (new leader). If I'm a follower,
-// just note the heartbeat to mean the leader is still alive.
+// note that the leader is still alive, replicate my log, and reply.
+//
+// Note there is no reply unless I am a follower.
+//
+// (Ref paper figure 2 and section 5)
 //
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	if args.Term >= rf.currentTerm {
@@ -538,6 +565,19 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			// I step down to new leader
 			rf.leaderStatus = Follower
 			rf.votedFor = NoOne
+
+			// Clear nextIndex, matchIndex
+			for i := 0; i < len(rf.peers); i++ {
+				rf.nextIndex[i] = 0
+				rf.matchIndex[i] = 0
+			}
+
+			// Mark all pending consensus outcomes as "stale"
+			for _, entry := range rf.log {
+				if entry.IsPendingConsensus {
+					entry.ConsensusOutcome <- Stale
+				}
+			}
 		} else if rf.leaderStatus == Candidate {
 			// I lost
 			rf.electionOutcome <- Lost
@@ -547,6 +587,81 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 			// Since this may also be the result of an election, reset who I voted for
 			rf.votedFor = NoOne
+
+			//--------------------------------------------
+			// Replicate leader's log (or ask for more
+			// entries if needed)
+			//--------------------------------------------
+
+			if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
+				// Logs out of sync. Ask for more entries
+				reply.Success = false
+				reply.Term = args.Term
+
+				// DEBUG
+				if debugConsensus {
+					log.Printf("Term %v: %v sent failure reply to AppendEntries from %v (leader)\n", rf.currentTerm, rf.me, args.LeaderId)
+				}
+
+				return
+			}
+
+			// Delete conflicting entries
+			firstNewEntry := 0                   // index into args.Entries
+			startIndex := args.PrevLogIndex + 1  // index into rf.log
+			if startIndex <= len(rf.log) - 1 {
+				potentialConflicts := rf.log[startIndex:]
+				if len(potentialConflicts) > len(args.Entries) {
+					// I have extra entries. Delete them.
+					rf.log = rf.deleteEntriesFrom(startIndex)
+				} else {
+					for i := 0; i < len(potentialConflicts); i++ {
+						if potentialConflicts[i].Term != args.Entries[i].Term {
+							// I have a conflict. Delete it and everything after it.
+							rf.log = rf.deleteEntriesFrom(startIndex + i)
+							firstNewEntry = i
+							break
+						}
+					}
+				}
+			}
+
+			// Append entries not in log
+			for i := firstNewEntry; i < len(args.Entries); i++ {
+				rf.log = append(rf.log, args.Entries[i])
+			}
+
+
+			//----------------------------------------------
+			// Commit and apply new entries (if applicable)
+			//----------------------------------------------
+
+			rf.mu.Lock() // ensure that I don't read commitIndex *while* entries are being applied concurrently
+			if args.LeaderCommit > rf.commitIndex {
+				rf.mu.Unlock()
+
+				// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
+				var newCommitIndex int
+				lastLogIndex := len(rf.log) - 1
+				if args.LeaderCommit < lastLogIndex {
+					newCommitIndex = args.LeaderCommit
+				} else {
+					newCommitIndex = lastLogIndex
+				}
+
+				rf.applyLogEntries(newCommitIndex)
+			} else {
+				rf.mu.Unlock()
+			}
+
+			// Reply
+			reply.Success = true
+			reply.Term = args.Term
+
+			// DEBUG
+			if debugConsensus {
+				log.Printf("Term %v: %v sent success reply to AppendEntries from %v (leader)\n", rf.currentTerm, rf.me, args.LeaderId)
+			}
 		}
 
 		go rf.waitForLeaderToDie()

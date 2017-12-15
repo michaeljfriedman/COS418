@@ -23,9 +23,9 @@ Part I - Appending log entries and reaching consensus
   * sendAppendEntries()  (overwrites old sendAppendEntries)
   * sendPeriodicHeartbeats()
 
-- Implement follower functions:
-  - AppendEntries()
-  - logsMatchThrough()
+* Implement follower functions:
+  * AppendEntries()
+  * logsMatchThrough()
 
 
 Part II - Handling failures/persistence

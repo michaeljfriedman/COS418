@@ -52,3 +52,26 @@ Part II - Handling failures/persistence
 
 Part III - Optimization
 -----------------------
+
+
+
+Suggestions from listening at lab TAs:
+--------------------------------------
+- In general, any read of log-related data (log, commitIndex, lastApplied, etc.)
+  requires a lock in advance.
+- You can usually just lock an entire function, even if you only need the lock
+  for part of it. They execute quickly anyway, so it doesn't cause much delay.
+  But *don't* lock things that take a while to run:
+  - When RPC is sent
+  - for loops
+  - Waiting for outcomes (e.g. consensusOutcome in doConsensus())
+- In particular, lock entire AppendEntries handler
+
+- You can't assume you remain the leader throughout an entire function,
+  unless it's locked. If you're about to acquire a lock to do something
+  leader-specific (e.g. apply entries in sendAppendEntries()), check that
+  you're still leader before you do it.
+
+- If you need to reference log size throughout a whole function, store it
+  at the beginning and use that size, since it could change throughout the
+  function.

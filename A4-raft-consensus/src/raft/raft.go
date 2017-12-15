@@ -207,15 +207,32 @@ func (rf *Raft) readPersist(data []byte) {
 // Leader election (data types/functions)
 
 //
-// Helper function. Generates and returns a timer with a random time
-// interval
+// Helper function. Generates and returns a timer with a random time from
+// minMillisecs to maxMillisecs.
 //
-func randomTimer() *time.Timer {
-	minMillisecs := 30
-	maxMillisecs := 50
-
+// If you want to use a timer, you should not call this method. Instead,
+// call one of the specific methods for the timer you're trying to create (see
+// functions below).
+//
+func randomTimer(minMillisecs int, maxMillisecs int) *time.Timer {
 	randMillisecs := minMillisecs + rand.Intn(maxMillisecs - minMillisecs)
 	return time.NewTimer(time.Millisecond * time.Duration(randMillisecs))
+}
+
+//
+// Returns a random timer for duration of an election (i.e. how long a
+// server waits for heartbeats or votes before starting a new election)
+//
+func electionTimer() *time.Timer {
+	return randomTimer(150, 300)
+}
+
+//
+// Returns a timer for duration between two rounds of heartbeats (for leader).
+//
+func leaderHeartbeatTimer() *time.Timer {
+	d := 30
+	return time.NewTimer(time.Millisecond * time.Duration(d))
 }
 
 //
@@ -245,7 +262,7 @@ func (rf *Raft) majority() int {
 // be called again when a heartbeat is received.
 //
 func (rf *Raft) waitForLeaderToDie() {
-	rf.heartbeatTimer = randomTimer()
+	rf.heartbeatTimer = electionTimer()
 
 	<-rf.heartbeatTimer.C
 
@@ -261,7 +278,6 @@ func (rf *Raft) waitForLeaderToDie() {
 // know I'm still alive.
 //
 func (rf *Raft) sendPeriodicHeartbeats() {
-	intervalMillisecs := 30
 	for rf.leaderStatus == Leader {
 		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
 
@@ -274,7 +290,7 @@ func (rf *Raft) sendPeriodicHeartbeats() {
 			go rf.sendHeartbeatTo(peerId)
 		}
 
-		timer := time.NewTimer(time.Millisecond * time.Duration(intervalMillisecs))
+		timer := leaderHeartbeatTimer()
 		<-timer.C
 	}
 }
@@ -448,7 +464,7 @@ func (rf *Raft) runForLeader() {
 
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
-	rf.electionTimer = randomTimer()
+	rf.electionTimer = electionTimer()
 	go func() {
 		<-rf.electionTimer.C
 		rf.electionOutcome <- Timeout
@@ -778,13 +794,13 @@ func (rf *Raft) sendAppendEntries(server int) {
 		// Mark these entries replicated, if applicable
 		for _, entry := range args.Entries {
 			if entry.IsPendingConsensus && entry.Index > rf.matchIndex[server] /* not yet replicated on that server */ {
-				rf.matchIndex[server] = entry.Index
-
 				entry.NumReplications++
 				if entry.NumReplications == rf.majority() {
 					entry.ConsensusOutcome <- Success
 				}
 			}
+
+			rf.matchIndex[server] = entry.Index
 		}
 
 	} else if reply.Status == Failure {
@@ -793,6 +809,8 @@ func (rf *Raft) sendAppendEntries(server int) {
 		// Set nextIndex for next call
 		rf.nextIndex[server]--
 	} else if reply.Status == Stale {
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got stale AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
+
 		// The replier had a later term than me. Since I'm leader and have most
 		// up to date log, I should resolve the difference in terms by getting
 		// re-elected.
@@ -826,8 +844,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	// Start a consensus procedure on the command
+	logIndex := len(rf.log)
 	go rf.doConsensus(command)
-	return len(rf.log), rf.currentTerm, true
+	return logIndex, rf.currentTerm, true
 }
 
 
@@ -856,6 +875,8 @@ func (rf *Raft) doConsensus(command interface{}) {
 
 	// Mark replicated on myself
 	newEntry.NumReplications++
+	rf.nextIndex[rf.me] = newEntry.Index + 1
+	rf.matchIndex[rf.me] = newEntry.Index
 
 	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntryIndex))
 

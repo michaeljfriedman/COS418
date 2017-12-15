@@ -17,6 +17,7 @@ package raft
 //   in the same server.
 //
 
+import "fmt"
 import "labrpc"
 import "log"
 import "math/rand"
@@ -26,13 +27,41 @@ import "time"
 // import "bytes"
 // import "encoding/gob"
 
-// DEBUG
+//------------------------------------------------------------------------------
+
+// Debugging tools
+
 // Set this debug flag to true to print out useful log statements during
 // leader election.
-const debugElection = false
+const debugElection = true
 
 // Set this debug flag to true for log statements during consensus
 const debugConsensus = true
+
+// Debugging streams
+const ElectionStream = "Election"
+const ConsensusStream = "Consensus"
+
+//
+// Writes msg to the debug log on the stream `stream`. (Pass
+// fmt.Sprintf("...") as s to print a formatted string)
+//
+func debugln(stream string, msg string) {
+	switch stream {
+	case ElectionStream:
+		if debugElection {
+			log.Printf("[%v] %v\n", ElectionStream, msg)
+		}
+	case ConsensusStream:
+		if debugConsensus {
+			log.Printf("[%v] %v\n", ConsensusStream, msg)
+		}
+	}
+}
+
+//------------------------------------------------------------------------------
+
+// Constants
 
 // Leader statuses
 const Leader = 0
@@ -59,6 +88,8 @@ const Success = 0
 // was outdated on receipt.)
 const Failure = 1
 const WasntReady = 2  // indicates recipient was not a follower when AppendEntries was sent. Try again to append log entries.
+
+//------------------------------------------------------------------------------
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -218,10 +249,7 @@ func (rf *Raft) waitForLeaderToDie() {
 
 	<-rf.heartbeatTimer.C
 
-	// DEBUG
-	if debugElection {
-		log.Printf("Term %d: %d wants to run. (votedFor = %d)\n", rf.currentTerm, rf.me, rf.votedFor)
-	}
+	debugln(ElectionStream, fmt.Sprintf("Term %d: %d wants to run. (votedFor = %d)", rf.currentTerm, rf.me, rf.votedFor))
 
 	if rf.votedFor == NoOne {
 		go rf.runForLeader()
@@ -235,10 +263,7 @@ func (rf *Raft) waitForLeaderToDie() {
 func (rf *Raft) sendPeriodicHeartbeats() {
 	intervalMillisecs := 30
 	for rf.leaderStatus == Leader {
-		// DEBUG
-			if debugConsensus {
-				log.Printf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)\n", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex)
-			}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
 
 		for peerId, _ := range rf.peers {
 			// Skip me
@@ -370,26 +395,18 @@ func (rf *Raft) requestVoteFrom(server int) {
 		return
 	}
 
-	// DEBUG
-	if debugElection {
-		log.Printf("Term %d: %d received vote reply from %d\n", rf.currentTerm, rf.me, server)
-	}
+	debugln(ElectionStream, fmt.Sprintf("Term %d: %d received vote reply from %d", rf.currentTerm, rf.me, server))
 
 	// Process reply. If applicable, add a vote for me and check if I won
 	if rf.leaderStatus == Candidate && reply.Term == rf.currentTerm && reply.VoteGranted {
-		// DEBUG
-		if debugElection {
-			log.Printf("Term %d: %d was voted for by %d\n", rf.currentTerm, rf.me, server)
-		}
+		debugln(ElectionStream, fmt.Sprintf("Term %d: %d was voted for by %d", rf.currentTerm, rf.me, server))
 
 		rf.numVotes++
 		if rf.numVotes == rf.majority() {
 			rf.electionOutcome <- Won
 		}
-	} else { // DEBUG
-		if debugElection {
-			log.Printf("Term %d: %d did not use vote reply from or was denied by %d\n", rf.currentTerm, rf.me, server)
-		}
+	} else {
+		debugln(ElectionStream, fmt.Sprintf("Term %d: %d did not use vote reply from or was denied by %d", rf.currentTerm, rf.me, server))
 	}
 }
 
@@ -427,10 +444,7 @@ func (rf *Raft) runForLeader() {
 	rf.numVotes++
 	rf.votedFor = rf.me
 
-	// DEBUG
-	if debugElection {
-		log.Printf("Term %d: %d voted for himself\n", rf.currentTerm, rf.me)
-	}
+	debugln(ElectionStream, fmt.Sprintf("Term %d: %d voted for himself", rf.currentTerm, rf.me))
 
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
@@ -453,10 +467,7 @@ func (rf *Raft) runForLeader() {
 		go rf.requestVoteFrom(peerId)
 	}
 
-	// DEBUG
-	if debugElection {
-		log.Printf("Term %d: %d requested votes from other servers\n", rf.currentTerm, rf.me)
-	}
+	debugln(ElectionStream, fmt.Sprintf("Term %d: %d requested votes from other servers", rf.currentTerm, rf.me))
 
 	//-------------------------------------
 
@@ -480,15 +491,9 @@ func (rf *Raft) runForLeader() {
 		// that I'm their new leader
 		go rf.sendPeriodicHeartbeats()
 
-		// DEBUG
-		if debugConsensus {
-			log.Printf("Term %v: %v is now leader\n", rf.currentTerm, rf.me)
-		}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is now leader", rf.currentTerm, rf.me))
 
-		// DEBUG
-		if debugElection {
-			log.Printf("Term %v: %v has won election and sent notifs to other servers\n", rf.currentTerm, rf.me)
-		}
+		debugln(ElectionStream, fmt.Sprintf("Term %v: %v has won election and sent notifs to other servers", rf.currentTerm, rf.me))
 	} else if outcome == Lost {
 		// I become follower
 		rf.electionTimer.Stop()
@@ -633,10 +638,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 				reply.Status = Failure
 				reply.Term = args.Term
 
-				// DEBUG
-				if debugConsensus {
-					log.Printf("Term %v: %v replied to %v (leader) AE %v with failure\n", rf.currentTerm, rf.me, args.LeaderId, args.Id)
-				}
+				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 
 				return
 			}
@@ -693,10 +695,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			reply.Status = Success
 			reply.Term = rf.currentTerm
 
-			// DEBUG
-			if debugConsensus {
-				log.Printf("Term %v: %v replied to %v (leader) AE %v with success\n", rf.currentTerm, rf.me, args.LeaderId, args.Id)
-			}
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 		}
 
 		go rf.waitForLeaderToDie()
@@ -751,13 +750,10 @@ func (rf *Raft) sendAppendEntries(server int) {
 	// Initialize empty reply
 	reply := &AppendEntriesReply{}
 
-	// DEBUG
-	if debugConsensus {
-		if len(args.Entries) > 0 {
-			log.Printf("Term: %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)\n", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, args.LeaderCommit, prevLogIndex)
-		} else {
-			log.Printf("Term: %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)\n", rf.currentTerm, rf.me, args.Id, server, args.LeaderCommit, prevLogIndex)
-		}
+	if len(args.Entries) > 0 {
+		debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, args.LeaderCommit, prevLogIndex))
+	} else {
+		debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, args.LeaderCommit, prevLogIndex))
 	}
 
 	// Send message, get reply
@@ -767,20 +763,14 @@ func (rf *Raft) sendAppendEntries(server int) {
 		// Server never replied or wasn't a follower at time of sending. Just try
 		// again in next heartbeat.
 
-		// DEBUG
-		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got inconclusive AE %v reply from %v\n", rf.currentTerm, rf.me, args.Id, server)
-		}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got inconclusive AE %v reply from %v", rf.currentTerm, rf.me, args.Id, server))
 
 		return
 	}
 
 	// Process reply
 	if reply.Status == Success {
-		// DEBUG
-		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got success AE %v reply from %v\n", rf.currentTerm, rf.me, reply.Id, server)
-		}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got success AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
 
 		// Reset nextIndex for that server
 		rf.nextIndex[server] = len(rf.log)
@@ -798,10 +788,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 		}
 
 	} else if reply.Status == Failure {
-		// DEBUG
-		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got failure AE %v reply from %v\n", rf.currentTerm, rf.me, reply.Id, server)
-		}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got failure AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
 
 		// Set nextIndex for next call
 		rf.nextIndex[server]--
@@ -854,10 +841,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 func (rf *Raft) doConsensus(command interface{}) {
 	newEntryIndex := len(rf.log)
 
-	// DEBUG
-	if debugConsensus {
-		log.Printf("Term %v: %v (leader) began consensus for entry #%v\n", rf.currentTerm, rf.me, newEntryIndex)
-	}
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
 
 	// Create new LogEntry and append it
 	newEntry := &LogEntry{
@@ -873,19 +857,13 @@ func (rf *Raft) doConsensus(command interface{}) {
 	// Mark replicated on myself
 	newEntry.NumReplications++
 
-	// DEBUG
-	if debugConsensus {
-		log.Printf("Term %v: %v (leader) added entry #%v to his log\n", rf.currentTerm, rf.me, newEntryIndex)
-	}
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntryIndex))
 
 	// Wait for consensus outcome
 	outcome := <-newEntry.ConsensusOutcome
 	newEntry.IsPendingConsensus = false
 	if outcome == Success {
-		// DEBUG
-		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got consensus for entry #%v\n", rf.currentTerm, rf.me, newEntryIndex)
-		}
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
 
 		// Consensus was reached! I can commit/apply this entry
 		rf.mu.Lock() // ensure I don't read lastApplied *while* entries are being applied concurrently
@@ -910,11 +888,9 @@ func (rf *Raft) doConsensus(command interface{}) {
 // running at the same time).
 //
 func (rf *Raft) applyLogEntries(newCommitIndex int) {
-	// DEBUG
 	oldLastApplied := rf.lastApplied
-	if debugConsensus {
-		log.Printf("Term %v: %v (leader? %v) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex)
-	}
+
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader? %v) is applying entries #%v to #%v", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex))
 
 	// Lock so that lastApplied and commitIndex can't be changed/read
 	// while applying entries
@@ -936,10 +912,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	}
 	rf.lastApplied = rf.commitIndex
 
-	// DEBUG
-	if debugConsensus {
-		log.Printf("Term %v: %v (leader? %v) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex)
-	}
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader? %v) finished applying entries #%v to #%v", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex))
 }
 
 
@@ -952,10 +925,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
 
-	// DEBUG
-	if debugConsensus {
-		log.Printf("%v was shut down at term %v. (lastLogIndex = %v, lastLogTerm = %v, commitIndex = %v, leaderStatus = %v)\n", rf.me, rf.currentTerm, len(rf.log)-1, rf.lastLogTerm(), rf.commitIndex, rf.leaderStatus)
-	}
+	debugln(ConsensusStream, fmt.Sprintf("%v was shut down at term %v. (lastLogIndex = %v, lastLogTerm = %v, commitIndex = %v, leaderStatus = %v)", rf.me, rf.currentTerm, len(rf.log)-1, rf.lastLogTerm(), rf.commitIndex, rf.leaderStatus))
 }
 
 //

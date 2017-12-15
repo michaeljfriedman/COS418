@@ -31,11 +31,17 @@ Part I - Appending log entries and reaching consensus
   * TestBasicAgree
   * TestFailAgree
   - TestFailNoAgree
+    - See err3-no-leader-elected.txt
   - TestConcurrentStarts
   - TestRejoin
   - TestBackup
   - TestCount
   - Remove AppendEntriesArgs Id attr and Raft appendEntriesId attr before moving on (?)
+
+- Fix leader election bug?
+  - At one point I got a failure in the second leader election test (from A3),
+    where server 0 claimed to be leader even though no leader should have been
+    elected... but this only happened once and never happened again. Weird...
 
 
 Part II - Handling failures/persistence

@@ -27,6 +27,16 @@ Part I - Appending log entries and reaching consensus
   * AppendEntries()
   * logsMatchThrough()
 
+- Debug tests:
+  * TestBasicAgree
+  * TestFailAgree
+  - TestFailNoAgree
+  - TestConcurrentStarts
+  - TestRejoin
+  - TestBackup
+  - TestCount
+  - Remove AppendEntriesArgs Id attr and Raft appendEntriesId attr before moving on (?)
+
 
 Part II - Handling failures/persistence
 ---------------------------------------

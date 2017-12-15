@@ -52,8 +52,11 @@ const NoOne = -1
 // Consensus outcomes. "Stale" (defined above) is also a valid value.
 const Success = 0
 
-// AppendEntries reply statuses. "Success" (defined above) is also a valid
-// value.
+// AppendEntries reply statuses. "Success" and "Stale" (defined above) are also
+// valid values.
+//
+// ("Stale" in this context indicates that the term the AppendEntries message
+// was outdated on receipt.)
 const Failure = 1
 const WasntReady = 2  // indicates recipient was not a follower when AppendEntries was sent. Try again to append log entries.
 
@@ -104,6 +107,7 @@ type Raft struct {
 	nextIndex     []int
 	matchIndex    []int
 	applyCh       chan ApplyMsg // send log entries to this channel to "apply" them
+	appendEntriesId int // DEBUG
 }
 
 //
@@ -173,22 +177,21 @@ func (rf *Raft) readPersist(data []byte) {
 // interval
 //
 func randomTimer() *time.Timer {
-	minMillisecs := 150
-	maxMillisecs := 300
+	minMillisecs := 30
+	maxMillisecs := 50
 
 	randMillisecs := minMillisecs + rand.Intn(maxMillisecs - minMillisecs)
 	return time.NewTimer(time.Millisecond * time.Duration(randMillisecs))
 }
 
 //
-// Returns the term of the last committed log entry, or 0 if there are
-// no log entries.
+// Returns the term of the last log entry, or 0 if there are no log entries.
 //
 func (rf *Raft) lastLogTerm() int {
-	if rf.commitIndex == 0 {
+	if len(rf.log) == 1 {
 		return 0
 	}
-	return rf.log[rf.commitIndex].Term
+	return rf.log[len(rf.log)-1].Term
 }
 
 //
@@ -229,6 +232,11 @@ func (rf *Raft) waitForLeaderToDie() {
 func (rf *Raft) sendPeriodicHeartbeats() {
 	intervalMillisecs := 30
 	for rf.leaderStatus == Leader {
+		// DEBUG
+			if debugConsensus {
+				log.Printf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)\n", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex)
+			}
+
 		for peerId, _ := range rf.peers {
 			// Skip me
 			if peerId == rf.me {
@@ -282,11 +290,11 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 	}
 
 	// If terms are equal, then their log is more up to date if it's longer.
-	if args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= rf.commitIndex {
+	if args.LastLogTerm == rf.lastLogTerm() && args.LastLogIndex >= len(rf.log)-1 {
 		return true
 	}
 
-	// Neither test passed. Candidate's log must not be as up to
+	// Neither test passed. Candidate's log must not be as up to date
 	return false
 }
 
@@ -346,7 +354,7 @@ func (rf *Raft) requestVoteFrom(server int) {
 	args := RequestVoteArgs{
 		rf.currentTerm,
 		rf.me,
-		rf.commitIndex,   // last log index
+		len(rf.log)-1,    // last log index
 		rf.lastLogTerm(), // last log term
 	}
 	reply := RequestVoteReply{
@@ -513,6 +521,9 @@ type AppendEntriesArgs struct {
 	PrevLogTerm  int
 	LeaderCommit int
 	Entries      []*LogEntry
+
+	// DEBUG
+	Id int
 }
 
 //
@@ -527,6 +538,9 @@ type AppendEntriesReply struct {
 	Term    int
 	Status  int  // Success, Failure, or WasntReady. Serves role of "success"
 	             // attribute from the paper (see Figure 2)
+
+	// DEBUG
+	Id int
 }
 
 //
@@ -563,6 +577,9 @@ func (rf *Raft) logsMatchThrough(prevLogIndex int, prevLogTerm int) bool {
 // (Ref paper figure 2 and section 5)
 //
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	// DEBUG
+	reply.Id = args.Id
+
 	if args.Term >= rf.currentTerm {
 		// Update my term
 		rf.currentTerm = args.Term
@@ -587,14 +604,14 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 			// Reply "wasn't ready"
 			reply.Status = WasntReady
-			reply.Term = args.Term
+			reply.Term = rf.currentTerm
 		} else if rf.leaderStatus == Candidate {
 			// I lost
 			rf.electionOutcome <- Lost
 
 			// Reply "wasn't ready"
 			reply.Status = WasntReady
-			reply.Term = args.Term
+			reply.Term = rf.currentTerm
 		} else if rf.leaderStatus == Follower {
 			// Reset heartbeat timer for leader
 			rf.heartbeatTimer.Stop()
@@ -614,7 +631,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 				// DEBUG
 				if debugConsensus {
-					log.Printf("Term %v: %v sent failure reply to AppendEntries from %v (leader)\n", rf.currentTerm, rf.me, args.LeaderId)
+					log.Printf("Term %v: %v replied to %v (leader) AE %v with failure\n", rf.currentTerm, rf.me, args.LeaderId, args.Id)
 				}
 
 				return
@@ -670,15 +687,19 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 			// Reply
 			reply.Status = Success
-			reply.Term = args.Term
+			reply.Term = rf.currentTerm
 
 			// DEBUG
 			if debugConsensus {
-				log.Printf("Term %v: %v sent success reply to AppendEntries from %v (leader)\n", rf.currentTerm, rf.me, args.LeaderId)
+				log.Printf("Term %v: %v replied to %v (leader) AE %v with success\n", rf.currentTerm, rf.me, args.LeaderId, args.Id)
 			}
 		}
 
 		go rf.waitForLeaderToDie()
+
+	} else /* Message is from an old term */ {
+		reply.Status = Stale
+		reply.Term = rf.currentTerm
 	}
 }
 
@@ -719,7 +740,11 @@ func (rf *Raft) sendAppendEntries(server int) {
 		prevLogTerm,
 		rf.commitIndex,
 		entries,
+
+		// DEBUG
+		rf.appendEntriesId,
 	}
+	rf.appendEntriesId++
 
 	// Initialize empty reply
 	reply := &AppendEntriesReply{}
@@ -727,9 +752,9 @@ func (rf *Raft) sendAppendEntries(server int) {
 	// DEBUG
 	if debugConsensus {
 		if len(args.Entries) > 0 {
-			log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = [%v..%v], commitIndex = %v\n", rf.currentTerm, rf.me, server, nextIndex, len(rf.log)-1, args.LeaderCommit)
+			log.Printf("Term: %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)\n", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, args.LeaderCommit, prevLogIndex)
 		} else {
-			log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = [], commitIndex = %v, prevLogIndex = %v\n", rf.currentTerm, rf.me, server, args.LeaderCommit, prevLogIndex)
+			log.Printf("Term: %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)\n", rf.currentTerm, rf.me, args.Id, server, args.LeaderCommit, prevLogIndex)
 		}
 	}
 
@@ -742,7 +767,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 
 		// DEBUG
 		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got inconclusive reply to AppendEntries from %v. Ignoring.\n", rf.currentTerm, rf.me, server)
+			log.Printf("Term %v: %v (leader) got inconclusive AE %v reply from %v\n", rf.currentTerm, rf.me, args.Id, server)
 		}
 
 		return
@@ -752,7 +777,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 	if reply.Status == Success {
 		// DEBUG
 		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got success reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
+			log.Printf("Term %v: %v (leader) got success AE %v reply from %v\n", rf.currentTerm, rf.me, reply.Id, server)
 		}
 
 		// Reset nextIndex for that server
@@ -773,11 +798,17 @@ func (rf *Raft) sendAppendEntries(server int) {
 	} else if reply.Status == Failure {
 		// DEBUG
 		if debugConsensus {
-			log.Printf("Term %v: %v (leader) got failure reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
+			log.Printf("Term %v: %v (leader) got failure AE %v reply from %v\n", rf.currentTerm, rf.me, reply.Id, server)
 		}
 
 		// Set nextIndex for next call
 		rf.nextIndex[server]--
+	} else if reply.Status == Stale {
+		// The replier had a later term than me. Since I'm leader and have most
+		// up to date log, I should resolve the difference in terms by getting
+		// re-elected.
+		rf.currentTerm = reply.Term
+		go rf.runForLeader()
 	}
 }
 
@@ -880,7 +911,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	// DEBUG
 	oldLastApplied := rf.lastApplied
 	if debugConsensus {
-		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied+1, newCommitIndex)
+		log.Printf("Term %v: %v (leader? %v) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex)
 	}
 
 	// Lock so that lastApplied and commitIndex can't be changed/read
@@ -905,7 +936,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 
 	// DEBUG
 	if debugConsensus {
-		log.Printf("Term %v: %v (leader) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied+1, newCommitIndex)
+		log.Printf("Term %v: %v (leader? %v) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex)
 	}
 }
 
@@ -918,6 +949,11 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 //
 func (rf *Raft) Kill() {
 	// Your code here, if desired.
+
+	// DEBUG
+	if debugConsensus {
+		log.Printf("%v was shut down at term %v. (lastLogIndex = %v, lastLogTerm = %v, commitIndex = %v, leaderStatus = %v)\n", rf.me, rf.currentTerm, len(rf.log)-1, rf.lastLogTerm(), rf.commitIndex, rf.leaderStatus)
+	}
 }
 
 //
@@ -961,6 +997,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	rf.applyCh = applyCh
+
+	// DEBUG
+	rf.appendEntriesId = 0
 
 	// Ready for heartbeat messages
 	go rf.waitForLeaderToDie()

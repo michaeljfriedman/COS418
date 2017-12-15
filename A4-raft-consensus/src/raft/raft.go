@@ -52,6 +52,11 @@ const NoOne = -1
 // Consensus outcomes. "Stale" (defined above) is also a valid value.
 const Success = 0
 
+// AppendEntries reply statuses. "Success" (defined above) is also a valid
+// value.
+const Failure = 1
+const WasntReady = 2  // indicates recipient was not a follower when AppendEntries was sent. Try again to append log entries.
+
 //
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -520,7 +525,8 @@ type AppendEntriesArgs struct {
 //
 type AppendEntriesReply struct {
 	Term    int
-	Success bool
+	Status  int  // Success, Failure, or WasntReady. Serves role of "success"
+	             // attribute from the paper (see Figure 2)
 }
 
 //
@@ -573,14 +579,22 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			}
 
 			// Mark all pending consensus outcomes as "stale"
-			for _, entry := range rf.log {
-				if entry.IsPendingConsensus {
-					entry.ConsensusOutcome <- Stale
+			for i := rf.commitIndex+1; i < len(rf.log); i++ {
+				if rf.log[i].IsPendingConsensus {
+					rf.log[i].ConsensusOutcome <- Stale
 				}
 			}
+
+			// Reply "wasn't ready"
+			reply.Status = WasntReady
+			reply.Term = args.Term
 		} else if rf.leaderStatus == Candidate {
 			// I lost
 			rf.electionOutcome <- Lost
+
+			// Reply "wasn't ready"
+			reply.Status = WasntReady
+			reply.Term = args.Term
 		} else if rf.leaderStatus == Follower {
 			// Reset heartbeat timer for leader
 			rf.heartbeatTimer.Stop()
@@ -595,7 +609,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 			if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
 				// Logs out of sync. Ask for more entries
-				reply.Success = false
+				reply.Status = Failure
 				reply.Term = args.Term
 
 				// DEBUG
@@ -655,7 +669,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			}
 
 			// Reply
-			reply.Success = true
+			reply.Status = Success
 			reply.Term = args.Term
 
 			// DEBUG
@@ -712,25 +726,30 @@ func (rf *Raft) sendAppendEntries(server int) {
 
 	// DEBUG
 	if debugConsensus {
-		log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = %v\n", rf.currentTerm, rf.me, server, args.Entries)
+		if len(args.Entries) > 0 {
+			log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = [%v..%v], commitIndex = %v\n", rf.currentTerm, rf.me, server, nextIndex, len(rf.log)-1, args.LeaderCommit)
+		} else {
+			log.Printf("Term: %v: %v (leader) is sending AppendEntries to %v: entries = [], commitIndex = %v, prevLogIndex = %v\n", rf.currentTerm, rf.me, server, args.LeaderCommit, prevLogIndex)
+		}
 	}
 
 	// Send message, get reply
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
-	if !ok {
-		// Server never replied. Just try again next call
+	if !ok || reply.Status == WasntReady {
+		// Server never replied or wasn't a follower at time of sending. Just try
+		// again in next heartbeat.
 
 		// DEBUG
 		if debugConsensus {
-			log.Printf("Term %v: %v (leader) never got reply to AppendEntries from %v. Ignoring.\n", rf.currentTerm, rf.me, server)
+			log.Printf("Term %v: %v (leader) got inconclusive reply to AppendEntries from %v. Ignoring.\n", rf.currentTerm, rf.me, server)
 		}
 
 		return
 	}
 
 	// Process reply
-	if reply.Success {
+	if reply.Status == Success {
 		// DEBUG
 		if debugConsensus {
 			log.Printf("Term %v: %v (leader) got success reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
@@ -751,7 +770,7 @@ func (rf *Raft) sendAppendEntries(server int) {
 			}
 		}
 
-	} else /* failure */ {
+	} else if reply.Status == Failure {
 		// DEBUG
 		if debugConsensus {
 			log.Printf("Term %v: %v (leader) got failure reply to AppendEntries from %v\n", rf.currentTerm, rf.me, server)
@@ -861,7 +880,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	// DEBUG
 	oldLastApplied := rf.lastApplied
 	if debugConsensus {
-		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied, newCommitIndex)
+		log.Printf("Term %v: %v (leader) is applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied+1, newCommitIndex)
 	}
 
 	// Lock so that lastApplied and commitIndex can't be changed/read
@@ -886,7 +905,7 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 
 	// DEBUG
 	if debugConsensus {
-		log.Printf("Term %v: %v (leader) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied, newCommitIndex)
+		log.Printf("Term %v: %v (leader) finished applying entries #%v to #%v\n", rf.currentTerm, rf.me, oldLastApplied+1, newCommitIndex)
 	}
 }
 

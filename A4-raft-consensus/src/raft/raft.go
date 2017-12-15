@@ -107,7 +107,10 @@ type Raft struct {
 	nextIndex     []int
 	matchIndex    []int
 	applyCh       chan ApplyMsg // send log entries to this channel to "apply" them
-	appendEntriesId int // DEBUG
+
+	// DEBUG
+	// Attributes for help with debugging
+	appendEntriesId int  // counter for message IDs
 }
 
 //
@@ -523,7 +526,8 @@ type AppendEntriesArgs struct {
 	Entries      []*LogEntry
 
 	// DEBUG
-	Id int
+	// Attributes for help with debugging
+	Id int // unique id for each message sent by this server
 }
 
 //
@@ -540,7 +544,8 @@ type AppendEntriesReply struct {
 	             // attribute from the paper (see Figure 2)
 
 	// DEBUG
-	Id int
+	// Attributes for help with debugging
+	Id int // same as corresponding arg id
 }
 
 //
@@ -577,7 +582,6 @@ func (rf *Raft) logsMatchThrough(prevLogIndex int, prevLogTerm int) bool {
 // (Ref paper figure 2 and section 5)
 //
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	// DEBUG
 	reply.Id = args.Id
 
 	if args.Term >= rf.currentTerm {
@@ -740,8 +744,6 @@ func (rf *Raft) sendAppendEntries(server int) {
 		prevLogTerm,
 		rf.commitIndex,
 		entries,
-
-		// DEBUG
 		rf.appendEntriesId,
 	}
 	rf.appendEntriesId++
@@ -997,8 +999,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	rf.applyCh = applyCh
-
-	// DEBUG
 	rf.appendEntriesId = 0
 
 	// Ready for heartbeat messages

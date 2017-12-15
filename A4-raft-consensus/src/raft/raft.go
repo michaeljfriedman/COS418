@@ -350,20 +350,28 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
+	if args.Term <= rf.currentTerm {
+		// You're running in an outdated election
+		reply.VoteGranted = false
+		return
+	}
+
+	// Update my term to latest term
+	rf.currentTerm = args.Term
+
+	if rf.leaderStatus == Candidate {
 		// I'm running in an outdated election. I stop my outdated candidacy and
 		// vote for you (the caller) in the new election.
 		rf.electionOutcome <- Stale
-		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
-	} else if rf.canBeLeader(args) && args.Term > rf.currentTerm && rf.votedFor == NoOne {
+	} else if rf.canBeLeader(args) && rf.votedFor == NoOne {
 		// You (the caller) are eligible to run and I haven't voted yet in this
 		// election, so I vote for you.
-		rf.currentTerm = args.Term
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 	} else {
+		// You're not eligible, or I voted already. Sorry bud.
 		reply.VoteGranted = false
 	}
 }
@@ -498,8 +506,9 @@ func (rf *Raft) runForLeader() {
 		rf.votedFor = NoOne
 
 		// Initialize vars I need to keep track of as leader (see section 5.3)
+		nextIndex := len(rf.log)  // last log index + 1
 		for peerId, _ := range rf.peers {
-			rf.nextIndex[peerId] = len(rf.log) // last log index + 1
+			rf.nextIndex[peerId] = nextIndex
 			rf.matchIndex[peerId] = 0
 		}
 
@@ -519,6 +528,9 @@ func (rf *Raft) runForLeader() {
 		rf.votedFor = NoOne
 	} else if outcome == Timeout {
 		// Restart election
+
+		debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
+
 		go rf.runForLeader()
 	} else if outcome == Stale {
 		// I realized I am running in an outdated election. Stop running.
@@ -605,121 +617,137 @@ func (rf *Raft) logsMatchThrough(prevLogIndex int, prevLogTerm int) bool {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply.Id = args.Id
 
-	if args.Term >= rf.currentTerm {
-		// Update my term
-		rf.currentTerm = args.Term
+	// Start waiting for heartbeats again when you're done here
+	defer func() {
+		go rf.waitForLeaderToDie()
+	}()
 
-		if rf.leaderStatus == Leader {
-			// I step down to new leader
-			rf.leaderStatus = Follower
-			rf.votedFor = NoOne
+	if args.Term < rf.currentTerm {
+		// Message is from an old term
+		reply.Status = Stale
+		reply.Term = rf.currentTerm
 
-			// Clear nextIndex, matchIndex
-			for i := 0; i < len(rf.peers); i++ {
-				rf.nextIndex[i] = 0
-				rf.matchIndex[i] = 0
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'stale'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+
+		return
+	}
+
+	//----------------------
+	// Process message
+	//----------------------
+
+	// Update my term
+	rf.currentTerm = args.Term
+
+	if rf.leaderStatus == Leader {
+		// I step down to new leader
+		rf.leaderStatus = Follower
+		rf.votedFor = NoOne
+
+		// Clear nextIndex, matchIndex
+		for i := 0; i < len(rf.peers); i++ {
+			rf.nextIndex[i] = 0
+			rf.matchIndex[i] = 0
+		}
+
+		// Mark all pending consensus outcomes as "stale"
+		for i := rf.commitIndex+1; i < len(rf.log); i++ {
+			if rf.log[i].IsPendingConsensus {
+				rf.log[i].ConsensusOutcome <- Stale
 			}
+		}
 
-			// Mark all pending consensus outcomes as "stale"
-			for i := rf.commitIndex+1; i < len(rf.log); i++ {
-				if rf.log[i].IsPendingConsensus {
-					rf.log[i].ConsensusOutcome <- Stale
-				}
-			}
+		// Reply "wasn't ready"
+		reply.Status = WasntReady
+		reply.Term = rf.currentTerm
 
-			// Reply "wasn't ready"
-			reply.Status = WasntReady
-			reply.Term = rf.currentTerm
-		} else if rf.leaderStatus == Candidate {
-			// I lost
-			rf.electionOutcome <- Lost
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'wasn't ready'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+	} else if rf.leaderStatus == Candidate {
+		// I lost
+		rf.electionOutcome <- Lost
 
-			// Reply "wasn't ready"
-			reply.Status = WasntReady
-			reply.Term = rf.currentTerm
-		} else if rf.leaderStatus == Follower {
-			// Reset heartbeat timer for leader
-			rf.heartbeatTimer.Stop()
+		// Reply "wasn't ready"
+		reply.Status = WasntReady
+		reply.Term = rf.currentTerm
 
-			// Since this may also be the result of an election, reset who I voted for
-			rf.votedFor = NoOne
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'wasn't ready'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+	} else if rf.leaderStatus == Follower {
+		// Reset heartbeat timer for leader
+		rf.heartbeatTimer.Stop()
 
-			//--------------------------------------------
-			// Replicate leader's log (or ask for more
-			// entries if needed)
-			//--------------------------------------------
+		// Since this may also be the result of an election, reset who I voted for
+		rf.votedFor = NoOne
 
-			if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
-				// Logs out of sync. Ask for more entries
-				reply.Status = Failure
-				reply.Term = args.Term
+		//--------------------------------------------
+		// Replicate leader's log (or ask for more
+		// entries if needed)
+		//--------------------------------------------
 
-				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+		if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
+			// Logs out of sync. Ask for more entries
+			reply.Status = Failure
+			reply.Term = args.Term
 
-				return
-			}
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 
-			// Delete conflicting entries
-			firstNewEntry := 0                   // index into args.Entries
-			startIndex := args.PrevLogIndex + 1  // index into rf.log
-			if startIndex <= len(rf.log) - 1 {
-				potentialConflicts := rf.log[startIndex:]
-				if len(potentialConflicts) > len(args.Entries) {
-					// I have extra entries. Delete them.
-					rf.log = rf.deleteEntriesFrom(startIndex)
-				} else {
-					for i := 0; i < len(potentialConflicts); i++ {
-						if potentialConflicts[i].Term != args.Entries[i].Term {
-							// I have a conflict. Delete it and everything after it.
-							rf.log = rf.deleteEntriesFrom(startIndex + i)
-							firstNewEntry = i
-							break
-						}
+			return
+		}
+
+		// Delete conflicting entries
+		firstNewEntry := 0                   // index into args.Entries
+		startIndex := args.PrevLogIndex + 1  // index into rf.log
+		if startIndex <= len(rf.log) - 1 {
+			potentialConflicts := rf.log[startIndex:]
+			if len(potentialConflicts) > len(args.Entries) {
+				// I have extra entries. Delete them.
+				rf.log = rf.deleteEntriesFrom(startIndex)
+			} else {
+				for i := 0; i < len(potentialConflicts); i++ {
+					if potentialConflicts[i].Term != args.Entries[i].Term {
+						// I have a conflict. Delete it and everything after it.
+						rf.log = rf.deleteEntriesFrom(startIndex + i)
+						firstNewEntry = i
+						break
 					}
 				}
 			}
-
-			// Append entries not in log
-			for i := firstNewEntry; i < len(args.Entries); i++ {
-				rf.log = append(rf.log, args.Entries[i])
-			}
-
-
-			//----------------------------------------------
-			// Commit and apply new entries (if applicable)
-			//----------------------------------------------
-
-			rf.mu.Lock() // ensure that I don't read commitIndex *while* entries are being applied concurrently
-			if args.LeaderCommit > rf.commitIndex {
-				rf.mu.Unlock()
-
-				// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
-				var newCommitIndex int
-				lastLogIndex := len(rf.log) - 1
-				if args.LeaderCommit < lastLogIndex {
-					newCommitIndex = args.LeaderCommit
-				} else {
-					newCommitIndex = lastLogIndex
-				}
-
-				rf.applyLogEntries(newCommitIndex)
-			} else {
-				rf.mu.Unlock()
-			}
-
-			// Reply
-			reply.Status = Success
-			reply.Term = rf.currentTerm
-
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 		}
 
-		go rf.waitForLeaderToDie()
+		// Append entries not in log
+		for i := firstNewEntry; i < len(args.Entries); i++ {
+			rf.log = append(rf.log, args.Entries[i])
+		}
 
-	} else /* Message is from an old term */ {
-		reply.Status = Stale
+
+		//----------------------------------------------
+		// Commit and apply new entries (if applicable)
+		//----------------------------------------------
+
+		rf.mu.Lock() // ensure that I don't read commitIndex *while* entries are being applied concurrently
+		if args.LeaderCommit > rf.commitIndex {
+			rf.mu.Unlock()
+
+			// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
+			var newCommitIndex int
+			lastLogIndex := len(rf.log) - 1
+			if args.LeaderCommit < lastLogIndex {
+				newCommitIndex = args.LeaderCommit
+			} else {
+				newCommitIndex = lastLogIndex
+			}
+
+			rf.applyLogEntries(newCommitIndex)
+		} else {
+			rf.mu.Unlock()
+		}
+
+		// Reply
+		reply.Status = Success
 		reply.Term = rf.currentTerm
+
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 	}
+
 }
 
 //
@@ -809,13 +837,10 @@ func (rf *Raft) sendAppendEntries(server int) {
 		// Set nextIndex for next call
 		rf.nextIndex[server]--
 	} else if reply.Status == Stale {
+		// The replier had a later term than me. Other servers will eventually
+		// see this as well when the replier tries to start new elections. So a
+		// new leader is coming. I don't have to do anything in the meantime.
 		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got stale AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
-
-		// The replier had a later term than me. Since I'm leader and have most
-		// up to date log, I should resolve the difference in terms by getting
-		// re-elected.
-		rf.currentTerm = reply.Term
-		go rf.runForLeader()
 	}
 }
 

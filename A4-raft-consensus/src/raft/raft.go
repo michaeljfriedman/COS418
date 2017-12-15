@@ -268,9 +268,7 @@ func (rf *Raft) waitForLeaderToDie() {
 
 	debugln(ElectionStream, fmt.Sprintf("Term %d: %d wants to run. (votedFor = %d)", rf.currentTerm, rf.me, rf.votedFor))
 
-	if rf.votedFor == NoOne {
-		go rf.runForLeader()
-	}
+	go rf.runForLeader()
 }
 
 //
@@ -350,6 +348,9 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
+	rf.mu.Lock()  // read/update currentTerm and votedFor atomically
+	defer rf.mu.Unlock()
+
 	if args.Term <= rf.currentTerm {
 		// You're running in an outdated election
 		reply.VoteGranted = false
@@ -444,31 +445,47 @@ func (rf *Raft) sendHeartbeatTo(server int) {
 }
 
 
-
 //
 // Start a new election, and run for leader.
 // See paper section 5.2 for reference.
 //
 func (rf *Raft) runForLeader() {
-	// Special case - if I'm the only server, I just become leader
-	if len(rf.peers) == 1 {
+	// Initiate my election *atomically*, if I can, or cancel if someone has
+	// already started running before me. `proceed` indicates whether I can
+	// proceed with my election.
+	proceed := func() bool {
+		rf.mu.Lock()  // need to vote for myself atomically
+		defer rf.mu.Unlock()
+
+		// Check if, to my knowledge, anyone has already started running before me
+		if rf.votedFor != NoOne {
+			return false
+		}
+
+		// Special case - if I'm the only server, I just become leader
+		if len(rf.peers) == 1 {
+			rf.currentTerm += 1
+			rf.leaderStatus = Leader
+			return false
+		}
+
+		// Initiate my election
 		rf.currentTerm += 1
-		rf.leaderStatus = Leader
+		rf.leaderStatus = Candidate
+		rf.numVotes = 0
+
+		// Vote for myself
+		rf.numVotes++
+		rf.votedFor = rf.me
+
+		debugln(ElectionStream, fmt.Sprintf("Term %d: %d voted for himself", rf.currentTerm, rf.me))
+
+		return true
+	}()
+
+	if !proceed {
 		return
 	}
-
-	//-------------------------------------
-
-	// Initiate the election from my perspective
-	rf.currentTerm += 1
-	rf.leaderStatus = Candidate
-	rf.numVotes = 0
-
-	// Vote for myself
-	rf.numVotes++
-	rf.votedFor = rf.me
-
-	debugln(ElectionStream, fmt.Sprintf("Term %d: %d voted for himself", rf.currentTerm, rf.me))
 
 	// Start a timer for the election. If the timer expires, the election "timed
 	// out" (i.e. no winner)
@@ -869,7 +886,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	}
 
 	// Start a consensus procedure on the command
-	logIndex := len(rf.log)
+	logIndex := rf.nextIndex[rf.me]
 	go rf.doConsensus(command)
 	return logIndex, rf.currentTerm, true
 }
@@ -883,27 +900,35 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // discarded or deletion.
 //
 func (rf *Raft) doConsensus(command interface{}) {
-	newEntryIndex := len(rf.log)
+	// Append to my log *atomically*
+	var newEntryIndex int
+	var newEntry *LogEntry
+	func() {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
+		newEntryIndex = rf.nextIndex[rf.me]
 
-	// Create new LogEntry and append it
-	newEntry := &LogEntry{
-		command,
-		rf.currentTerm,
-		newEntryIndex,
-		0,                 // NumReplications
-		true,              // IsPendingConsensus
-		make(chan int, 1), // ConsensusOutcome
-	}
-	rf.log = append(rf.log, newEntry)
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
 
-	// Mark replicated on myself
-	newEntry.NumReplications++
-	rf.nextIndex[rf.me] = newEntry.Index + 1
-	rf.matchIndex[rf.me] = newEntry.Index
+		// Create new LogEntry and append it
+		newEntry = &LogEntry{
+			command,
+			rf.currentTerm,
+			newEntryIndex,
+			0,                 // NumReplications
+			true,              // IsPendingConsensus
+			make(chan int, 1), // ConsensusOutcome
+		}
+		rf.log = append(rf.log, newEntry)
 
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntryIndex))
+		// Mark replicated on myself
+		newEntry.NumReplications++
+		rf.nextIndex[rf.me] = newEntry.Index + 1
+		rf.matchIndex[rf.me] = newEntry.Index
+
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntryIndex))
+	}()
 
 	// Wait for consensus outcome
 	outcome := <-newEntry.ConsensusOutcome

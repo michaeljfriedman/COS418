@@ -31,7 +31,6 @@ Part I - Appending log entries and reaching consensus
   * TestBasicAgree
   * TestFailAgree
   - TestFailNoAgree
-    - See err3-no-leader-elected.txt
   - TestConcurrentStarts
   - TestRejoin
   - TestBackup
@@ -54,6 +53,8 @@ Part III - Optimization
 -----------------------
 
 
+--------------------------------------------------------------------------------
+
 
 Suggestions from listening at lab TAs:
 --------------------------------------
@@ -67,11 +68,43 @@ Suggestions from listening at lab TAs:
   - Waiting for outcomes (e.g. consensusOutcome in doConsensus())
 - In particular, lock entire AppendEntries handler
 
+
 - You can't assume you remain the leader throughout an entire function,
   unless it's locked. If you're about to acquire a lock to do something
   leader-specific (e.g. apply entries in sendAppendEntries()), check that
   you're still leader before you do it.
 
+
 - If you need to reference log size throughout a whole function, store it
   at the beginning and use that size, since it could change throughout the
   function.
+
+
+- Consider this sequence (election):
+  - Term 0: 2 wants to run. Votes for himself and requests votes
+  - Term 0: 1 wants to run:
+      if rf.votedFor == NoOne {      <-- this line executes
+        go rf.runForLeader()
+      }
+  - Term 0: 1 receives RequestVote from 2. Grants vote and *sets term* to 1
+  - Term 1: 1 executes runForLeader(). *Increments term again* to 2.
+
+  Now 1 has effectively skipped a term. Fix:
+  - Move "if rf.votedFor == NoOne" into runForLeader()
+  - Lock runForLeader() while it runs
+
+
+
+What I can/should do now
+------------------------
+* Lock for doConsensus:
+  * Start() should return nextIndex[rf.me] instead of len(rf.log)
+  * doConsensus() should lock from beginning until entry has been appended to
+    log, and nextIndex is updated
+
+* Lock for elections:
+  * Lock all of RequestVote()
+  * Move "if rf.voterFor == NoOne" from waitForLeaderToDie() to runForLeader()
+  * Lock runForLeader() from the if statement above until I've finished
+    voting for myself
+

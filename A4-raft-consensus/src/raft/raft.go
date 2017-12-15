@@ -484,6 +484,7 @@ func (rf *Raft) runForLeader() {
 	}()
 
 	if !proceed {
+		debugln(ElectionStream, fmt.Sprintf("Term %v: %v couldn't run. Election started already", rf.currentTerm, rf.me))
 		return
 	}
 
@@ -545,9 +546,9 @@ func (rf *Raft) runForLeader() {
 		rf.votedFor = NoOne
 	} else if outcome == Timeout {
 		// Restart election
-
 		debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
 
+		rf.votedFor = NoOne
 		go rf.runForLeader()
 	} else if outcome == Stale {
 		// I realized I am running in an outdated election. Stop running.

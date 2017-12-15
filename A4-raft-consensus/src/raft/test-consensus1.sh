@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-basic-agree.sh
+# test-consensus1.sh
 # Author: Michael Friedman
 #
 # Runs BasicAgree test for consensus.

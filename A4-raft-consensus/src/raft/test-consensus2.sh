@@ -1,5 +1,5 @@
 #!/bin/bash
-# test-fail-agree.sh
+# test-consensus2.sh
 # Author: Michael Friedman
 #
 # Runs FailAgree test for consensus.

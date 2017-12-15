@@ -30,7 +30,7 @@ Part I - Appending log entries and reaching consensus
 - Debug tests:
   * TestBasicAgree
   * TestFailAgree
-  - TestFailNoAgree
+  * TestFailNoAgree
   - TestConcurrentStarts
   - TestRejoin
   - TestBackup

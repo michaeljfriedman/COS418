@@ -351,28 +351,43 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()  // read/update currentTerm and votedFor atomically
 	defer rf.mu.Unlock()
 
-	if args.Term <= rf.currentTerm {
+	//---------------
+	// Base cases
+	//---------------
+
+	if args.Term < rf.currentTerm {
 		// You're running in an outdated election
 		reply.VoteGranted = false
 		return
 	}
 
-	// Update my term to latest term
-	rf.currentTerm = args.Term
+	// Make sure to update my term to latest term, at the end
+	defer func() {
+		rf.currentTerm = args.Term
+	}()
 
-	if rf.leaderStatus == Candidate {
-		// I'm running in an outdated election. I stop my outdated candidacy and
-		// vote for you (the caller) in the new election.
+	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
+		// I'm running in an outdated election. I stop my outdated candidacy
 		rf.electionOutcome <- Stale
-		rf.votedFor = args.CandidateId
-		reply.VoteGranted = true
-	} else if rf.canBeLeader(args) && rf.votedFor == NoOne {
-		// You (the caller) are eligible to run and I haven't voted yet in this
-		// election, so I vote for you.
+	}
+
+	if !rf.canBeLeader(args) {
+		// You are not eligible to be leader. Sorry bud.
+		reply.VoteGranted = false
+		return
+	}
+
+	//-------------------------------
+	// Decide whether to grant vote
+	//-------------------------------
+
+	if rf.votedFor == NoOne || args.Term > rf.currentTerm {
+		// You (the caller) are eligible to run and I haven't voted yet (or it's
+		// a new election), so I vote for you.
 		rf.votedFor = args.CandidateId
 		reply.VoteGranted = true
 	} else {
-		// You're not eligible, or I voted already. Sorry bud.
+		// I voted already in this term
 		reply.VoteGranted = false
 	}
 }
@@ -635,11 +650,6 @@ func (rf *Raft) logsMatchThrough(prevLogIndex int, prevLogTerm int) bool {
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	reply.Id = args.Id
 
-	// Start waiting for heartbeats again when you're done here
-	defer func() {
-		go rf.waitForLeaderToDie()
-	}()
-
 	if args.Term < rf.currentTerm {
 		// Message is from an old term
 		reply.Status = Stale
@@ -653,6 +663,11 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	//----------------------
 	// Process message
 	//----------------------
+
+	// Start waiting for heartbeats again when you're done here
+	defer func() {
+		go rf.waitForLeaderToDie()
+	}()
 
 	// Update my term
 	rf.currentTerm = args.Term

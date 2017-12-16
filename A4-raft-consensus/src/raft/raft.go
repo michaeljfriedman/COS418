@@ -914,7 +914,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // the log at followers.
 //
 // By the time this terminates, the command has either been committed or
-// discarded or deletion.
+// discarded for deletion.
 //
 func (rf *Raft) doConsensus(command interface{}) {
 	// Append to my log *atomically*
@@ -954,13 +954,14 @@ func (rf *Raft) doConsensus(command interface{}) {
 		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
 
 		// Consensus was reached! I can commit/apply this entry
-		rf.mu.Lock() // ensure I don't read lastApplied *while* entries are being applied concurrently
-		if rf.lastApplied < newEntry.Index && !(newEntry.Term < rf.currentTerm) {
-			rf.mu.Unlock()
-			rf.applyLogEntries(newEntry.Index)
-		} else {
-			rf.mu.Unlock()
-		}
+		func() {
+			rf.mu.Lock()  // need to apply entries atomically
+			defer rf.mu.Unlock()
+
+			if rf.lastApplied < newEntry.Index && !(newEntry.Term < rf.currentTerm) {
+				rf.applyLogEntries(newEntry.Index)
+			}
+		}()
 	} else if outcome == Stale {
 		// Do nothing. If stale, this entry will be deleted soon anyway.
 	}
@@ -972,8 +973,7 @@ func (rf *Raft) doConsensus(command interface{}) {
 // (inclusive). By the time this returns, all log entries are applied, and
 // lastApplied and commitIndex are both be equal to newCommitIndex.
 //
-// This function is atomic and concurrency-safe (i.e. two calls of it cannot be
-// running at the same time).
+// This function should be executed while rf is *locked*.
 //
 func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	oldLastApplied := rf.lastApplied

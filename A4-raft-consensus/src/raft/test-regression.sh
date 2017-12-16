@@ -12,6 +12,7 @@ tests=(
   TestBasicAgree
   TestFailAgree
   TestFailNoAgree
+  TestRejoin
 )
 
 # Run tests

@@ -32,15 +32,9 @@ Part I - Appending log entries and reaching consensus
   * TestFailAgree
   * TestFailNoAgree
   - TestConcurrentStarts
-  - TestRejoin
+  * TestRejoin
   - TestBackup
   - TestCount
-  - Remove AppendEntriesArgs Id attr and Raft appendEntriesId attr before moving on (?)
-
-- Fix leader election bug?
-  - At one point I got a failure in the second leader election test (from A3),
-    where server 0 claimed to be leader even though no leader should have been
-    elected... but this only happened once and never happened again. Weird...
 
 
 Part II - Handling failures/persistence
@@ -78,21 +72,6 @@ Suggestions from listening at lab TAs:
 - If you need to reference log size throughout a whole function, store it
   at the beginning and use that size, since it could change throughout the
   function.
-
-
-- Consider this sequence (election):
-  - Term 0: 2 wants to run. Votes for himself and requests votes
-  - Term 0: 1 wants to run:
-      if rf.votedFor == NoOne {      <-- this line executes
-        go rf.runForLeader()
-      }
-  - Term 0: 1 receives RequestVote from 2. Grants vote and *sets term* to 1
-  - Term 1: 1 executes runForLeader(). *Increments term again* to 2.
-
-  Now 1 has effectively skipped a term. Fix:
-  - Move "if rf.votedFor == NoOne" into runForLeader()
-  - Lock runForLeader() while it runs
-
 
 
 What I can/should do now

@@ -41,6 +41,7 @@ const debugConsensus = true
 // Debugging streams
 const ElectionStream = "Election"
 const ConsensusStream = "Consensus"
+const TestStream = "Test"
 
 //
 // Writes msg to the debug log on the stream `stream`. (Pass
@@ -52,10 +53,14 @@ func debugln(stream string, msg string) {
 		if debugElection {
 			log.Printf("[%v] %v\n", ElectionStream, msg)
 		}
+		break
 	case ConsensusStream:
 		if debugConsensus {
 			log.Printf("[%v] %v\n", ConsensusStream, msg)
 		}
+		break
+	default:
+		log.Printf("[%v] %v\n", stream, msg)
 	}
 }
 

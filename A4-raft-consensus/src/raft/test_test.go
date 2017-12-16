@@ -328,13 +328,20 @@ func TestBackup(t *testing.T) {
 
 	fmt.Print("Test: leader backs up quickly over incorrect follower logs...")
 
+	debugln(TestStream, "Submitting an entry to everyone")
+
 	cfg.one(rand.Int(), servers)
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+
+	debugln(TestStream, fmt.Sprintf("Disconnecting partition 2: %v, %v, %v", (leader1 + 2) % servers, (leader1 + 3) % servers, (leader1 + 4) % servers))
+
 	cfg.disconnect((leader1 + 2) % servers)
 	cfg.disconnect((leader1 + 3) % servers)
 	cfg.disconnect((leader1 + 4) % servers)
+
+	debugln(TestStream, fmt.Sprintf("Submitting 50 entries to partition 1: %v (leader), %v (follower) (should not commit)", leader1, (leader1 + 1) % servers))
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
@@ -343,6 +350,8 @@ func TestBackup(t *testing.T) {
 
 	time.Sleep(RaftElectionTimeout / 2)
 
+	debugln(TestStream, fmt.Sprintf("Disconnecting partition 1: %v (leader), %v (follower). Reconnecting partition 2: %v, %v, %v", leader1, (leader1 + 1) % servers, (leader1 + 2) % servers, (leader1 + 3) % servers, (leader1 + 4) % servers))
+
 	cfg.disconnect((leader1 + 0) % servers)
 	cfg.disconnect((leader1 + 1) % servers)
 
@@ -350,6 +359,13 @@ func TestBackup(t *testing.T) {
 	cfg.connect((leader1 + 2) % servers)
 	cfg.connect((leader1 + 3) % servers)
 	cfg.connect((leader1 + 4) % servers)
+
+	// DEBUG
+	newLeader := cfg.checkOneLeader()
+	s1 := (leader1 + 2) % servers
+	s2 := (leader1 + 3) % servers
+	s3 := (leader1 + 4) % servers
+	debugln(TestStream, fmt.Sprintf("Submitting 50 entries to partition 2: %v (leader? %v), %v (leader? %v), %v (leader? %v) (should commit)", s1, (s1 == newLeader), s2, (s2 == newLeader), s3, (s3 == newLeader)))
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
@@ -362,7 +378,20 @@ func TestBackup(t *testing.T) {
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+
+	debugln(TestStream, fmt.Sprintf("Disconnecting %v (other) from partition 2", other))
+
 	cfg.disconnect(other)
+
+	// DEBUG
+	follower := (leader1 + 2) % servers
+	if follower == leader2 || follower == other {
+		follower = (leader1 + 3) % servers
+	}
+	if follower == leader2 || follower == other {
+		follower = (leader1 + 4) % servers
+	}
+	debugln(TestStream, fmt.Sprintf("Submitting 50 entries to partition 2, minus other: %v (leader), %v (follower) (should not commit)", leader2, follower))
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
@@ -370,6 +399,8 @@ func TestBackup(t *testing.T) {
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
+
+	debugln(TestStream, fmt.Sprintf("Disconnecting everyone, and reconnecting partition 1 + other: %v (leader), %v (follower), %v (other)", leader1, (leader1 + 1) % servers, other))
 
 	// bring original leader back to life,
 	for i := 0; i < servers; i++ {
@@ -379,15 +410,22 @@ func TestBackup(t *testing.T) {
 	cfg.connect((leader1 + 1) % servers)
 	cfg.connect(other)
 
+	debugln(TestStream, fmt.Sprintf("Sending 50 entries to partition 1 + other: %v (leader), %v (follower), %v (other) (should commit)", leader1, (leader1 + 1) % servers, other))
+
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3)
 	}
 
+	debugln(TestStream, "Reconnecting everyone")
+
 	// now everyone
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
+
+	debugln(TestStream, "Submitting an entry to everyone")
+
 	cfg.one(rand.Int(), servers)
 
 	fmt.Println("... Passed")

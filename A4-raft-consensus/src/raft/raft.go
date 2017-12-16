@@ -64,6 +64,32 @@ func debugln(stream string, msg string) {
 	}
 }
 
+
+//
+// Returns this server's log in string form. Format of each log entry is
+// index:term, with a pipe after the last committed entry. e.g.
+//   [ 1:1 2:1 3:1 | 4:2 5:3 ]
+//
+// NOTE: To use this, you will need to surround it with locks yourself (
+// I don't lock inside the function, in case you want to use it in a place
+// already locked). e.g.
+//   rf.mu.Lock()
+// 	 debugln(ConsensusStream, rf.logToStream())
+//   rf.mu.Unlock()
+func (rf *Raft) logToString() string {
+	s := "[ "
+	for i := 1; i < len(rf.log); i++ {
+		s += fmt.Sprintf("%v:%v ", rf.log[i].Index, rf.log[i].Term)
+		if rf.log[i].Index == rf.commitIndex {
+			s += "| "
+		}
+	}
+	s += "]"
+
+	return s
+}
+
+
 //------------------------------------------------------------------------------
 
 // Constants
@@ -146,7 +172,8 @@ type Raft struct {
 
 	// DEBUG
 	// Attributes for help with debugging
-	appendEntriesId int  // counter for message IDs
+	appendEntriesId int    // counter for message IDs
+	logString       string // update whenever entries are appended or committed
 }
 
 //
@@ -721,50 +748,51 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// entries if needed)
 		//--------------------------------------------
 
-		if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
-			// Logs out of sync. Ask for more entries
-			reply.Status = Failure
-			reply.Term = args.Term
+		func() {
+			// Replicate log *atomically*
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+			if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
+				// Logs out of sync. Ask for more entries
+				reply.Status = Failure
+				reply.Term = args.Term
 
-			return
-		}
+				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 
-		// Delete conflicting entries
-		firstNewEntry := 0                   // index into args.Entries
-		startIndex := args.PrevLogIndex + 1  // index into rf.log
-		if startIndex <= len(rf.log) - 1 {
-			potentialConflicts := rf.log[startIndex:]
-			if len(potentialConflicts) > len(args.Entries) {
-				// I have extra entries. Delete them.
-				rf.log = rf.deleteEntriesFrom(startIndex)
-			} else {
-				for i := 0; i < len(potentialConflicts); i++ {
-					if potentialConflicts[i].Term != args.Entries[i].Term {
-						// I have a conflict. Delete it and everything after it.
-						rf.log = rf.deleteEntriesFrom(startIndex + i)
-						firstNewEntry = i
-						break
+				return
+			}
+
+			// Delete conflicting entries
+			firstNewEntry := 0                   // index into args.Entries
+			startIndex := args.PrevLogIndex + 1  // index into rf.log
+			if startIndex <= len(rf.log) - 1 {
+				potentialConflicts := rf.log[startIndex:]
+				if len(potentialConflicts) > len(args.Entries) {
+					// I have extra entries. Delete them.
+					rf.log = rf.deleteEntriesFrom(startIndex)
+				} else {
+					for i := 0; i < len(potentialConflicts); i++ {
+						if potentialConflicts[i].Term != args.Entries[i].Term {
+							// I have a conflict. Delete it and everything after it.
+							rf.log = rf.deleteEntriesFrom(startIndex + i)
+							firstNewEntry = i
+							break
+						}
 					}
 				}
 			}
-		}
 
-		// Append entries not in log
-		for i := firstNewEntry; i < len(args.Entries); i++ {
-			rf.log = append(rf.log, args.Entries[i])
-		}
+			// Append entries not in log
+			for i := firstNewEntry; i < len(args.Entries); i++ {
+				rf.log = append(rf.log, args.Entries[i])
+				rf.logString = rf.logToString()  // DEBUG
+			}
 
 
-		//----------------------------------------------
-		// Commit and apply new entries (if applicable)
-		//----------------------------------------------
-
-		func() {
-			// Apply entries *atomically*
-			rf.mu.Lock()
-			defer rf.mu.Unlock()
+			//----------------------------------------------
+			// Commit and apply new entries (if applicable)
+			//----------------------------------------------
 
 			if args.LeaderCommit > rf.commitIndex {
 				// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
@@ -778,13 +806,13 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 				rf.applyLogEntries(newCommitIndex)
 			}
+
+			// Reply
+			reply.Status = Success
+			reply.Term = rf.currentTerm
+
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success. (log = %v)", rf.currentTerm, rf.me, args.LeaderId, args.Id, rf.logString))
 		}()
-
-		// Reply
-		reply.Status = Success
-		reply.Term = rf.currentTerm
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 	}
 
 }
@@ -922,8 +950,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		make(chan int, 1), // ConsensusOutcome
 	}
 	rf.log = append(rf.log, newEntry)
+	rf.logString = rf.logToString()  // DEBUG
 
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntry.Index))
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log. (log = %v)", rf.currentTerm, rf.me, newEntry.Index, rf.logString))
 
 	// Update index for the next log entry
 	rf.nextIndex[rf.me] = newEntry.Index + 1
@@ -998,7 +1027,9 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	}
 	rf.lastApplied = rf.commitIndex
 
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader? %v) finished applying entries #%v to #%v", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex))
+	rf.logString = rf.logToString()  // DEBUG
+
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader? %v) finished applying entries #%v to #%v. (log = %v)", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex, rf.logString))
 }
 
 
@@ -1056,6 +1087,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.matchIndex = make([]int, len(peers))
 	rf.applyCh = applyCh
 	rf.appendEntriesId = 0
+	rf.logString = rf.logToString()  // DEBUG
 
 	// Ready for heartbeat messages
 	go rf.waitForLeaderToDie()

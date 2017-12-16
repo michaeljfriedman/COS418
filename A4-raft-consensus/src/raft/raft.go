@@ -484,7 +484,7 @@ func (rf *Raft) runForLeader() {
 	}()
 
 	if !proceed {
-		debugln(ElectionStream, fmt.Sprintf("Term %v: %v couldn't run. Election started already", rf.currentTerm, rf.me))
+		debugln(ElectionStream, fmt.Sprintf("Term %v: %v couldn't run. Election started already (votedFor = %v)", rf.currentTerm, rf.me, rf.votedFor))
 		return
 	}
 
@@ -741,23 +741,24 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		// Commit and apply new entries (if applicable)
 		//----------------------------------------------
 
-		rf.mu.Lock() // ensure that I don't read commitIndex *while* entries are being applied concurrently
-		if args.LeaderCommit > rf.commitIndex {
-			rf.mu.Unlock()
+		func() {
+			// Apply entries *atomically*
+			rf.mu.Lock()
+			defer rf.mu.Unlock()
 
-			// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
-			var newCommitIndex int
-			lastLogIndex := len(rf.log) - 1
-			if args.LeaderCommit < lastLogIndex {
-				newCommitIndex = args.LeaderCommit
-			} else {
-				newCommitIndex = lastLogIndex
+			if args.LeaderCommit > rf.commitIndex {
+				// newCommitIndex = min(args.LeaderCommit, lastLogIndex)
+				var newCommitIndex int
+				lastLogIndex := len(rf.log) - 1
+				if args.LeaderCommit < lastLogIndex {
+					newCommitIndex = args.LeaderCommit
+				} else {
+					newCommitIndex = lastLogIndex
+				}
+
+				rf.applyLogEntries(newCommitIndex)
 			}
-
-			rf.applyLogEntries(newCommitIndex)
-		} else {
-			rf.mu.Unlock()
-		}
+		}()
 
 		// Reply
 		reply.Status = Success
@@ -963,11 +964,6 @@ func (rf *Raft) applyLogEntries(newCommitIndex int) {
 	oldLastApplied := rf.lastApplied
 
 	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader? %v) is applying entries #%v to #%v", rf.currentTerm, rf.me, (rf.leaderStatus == Leader), oldLastApplied+1, newCommitIndex))
-
-	// Lock so that lastApplied and commitIndex can't be changed/read
-	// while applying entries
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 
 	// Mark up to newCommitIndex as "committed"
 	rf.commitIndex = newCommitIndex

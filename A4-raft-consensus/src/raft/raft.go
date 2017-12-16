@@ -897,61 +897,59 @@ func (rf *Raft) sendAppendEntries(server int) {
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	// Append to my log *atomically*
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	// Do not accept commands if not the leader
 	if rf.leaderStatus != Leader {
 		return -1, -1, false
 	}
 
-	// Start a consensus procedure on the command
-	logIndex := rf.nextIndex[rf.me]
-	go rf.doConsensus(command)
-	return logIndex, rf.currentTerm, true
+	// Create new LogEntry and append it
+	newEntryIndex := rf.nextIndex[rf.me]
+	newEntry := &LogEntry{
+		command,
+		rf.currentTerm,
+		newEntryIndex,
+		0,                 // NumReplications
+		true,              // IsPendingConsensus
+		make(chan int, 1), // ConsensusOutcome
+	}
+	rf.log = append(rf.log, newEntry)
+
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntry.Index))
+
+	// Update index for the next log entry
+	rf.nextIndex[rf.me] = newEntry.Index + 1
+	rf.matchIndex[rf.me] = newEntry.Index
+
+	// Start a consensus procedure on this entry
+	go rf.getConsensus(newEntry)
+
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) received Start(). Returning index %v", rf.currentTerm, rf.me, newEntry.Index))
+
+	return newEntry.Index, rf.currentTerm, true
 }
 
 
 //
-// Logs the given command and runs the consensus protocol to replicate
-// the log at followers.
+// Runs the consensus protocol to replicate the log at followers.
 //
 // By the time this terminates, the command has either been committed or
 // discarded for deletion.
 //
-func (rf *Raft) doConsensus(command interface{}) {
-	// Append to my log *atomically*
-	var newEntryIndex int
-	var newEntry *LogEntry
-	func() {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
+func (rf *Raft) getConsensus(newEntry *LogEntry) {
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntry.Index))
 
-		newEntryIndex = rf.nextIndex[rf.me]
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
-
-		// Create new LogEntry and append it
-		newEntry = &LogEntry{
-			command,
-			rf.currentTerm,
-			newEntryIndex,
-			0,                 // NumReplications
-			true,              // IsPendingConsensus
-			make(chan int, 1), // ConsensusOutcome
-		}
-		rf.log = append(rf.log, newEntry)
-
-		// Mark replicated on myself
-		newEntry.NumReplications++
-		rf.nextIndex[rf.me] = newEntry.Index + 1
-		rf.matchIndex[rf.me] = newEntry.Index
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log", rf.currentTerm, rf.me, newEntryIndex))
-	}()
+	// Mark replicated on myself
+	newEntry.NumReplications++
 
 	// Wait for consensus outcome
 	outcome := <-newEntry.ConsensusOutcome
 	newEntry.IsPendingConsensus = false
 	if outcome == Success {
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, newEntryIndex))
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, newEntry.Index))
 
 		// Consensus was reached! I can commit/apply this entry
 		func() {

@@ -12,6 +12,7 @@ tests=(
   TestBasicAgree
   TestFailAgree
   TestFailNoAgree
+  TestConcurrentStarts
   TestRejoin
 )
 

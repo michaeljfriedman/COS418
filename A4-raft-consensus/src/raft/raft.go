@@ -110,6 +110,9 @@ const Stale = 3
 const NoOne = -1
 
 // Consensus outcomes. "Stale" (defined above) is also a valid value.
+//
+// ("Stale" in this context indicates that I was superseded by a new leader,
+// so all my pending consensuses are invalid.)
 const Success = 0
 
 // AppendEntries reply statuses. "Success" and "Stale" (defined above) are also
@@ -600,6 +603,7 @@ func (rf *Raft) runForLeader() {
 	} else if outcome == Stale {
 		// I realized I am running in an outdated election. Stop running.
 		rf.electionTimer.Stop()
+		rf.votedFor = NoOne
 		rf.leaderStatus = Follower
 	}
 }
@@ -960,8 +964,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Start a consensus procedure on this entry
 	go rf.getConsensus(newEntry)
-
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) received Start(). Returning index %v", rf.currentTerm, rf.me, newEntry.Index))
 
 	return newEntry.Index, rf.currentTerm, true
 }

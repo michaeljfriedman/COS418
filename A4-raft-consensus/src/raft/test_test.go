@@ -290,32 +290,46 @@ func TestRejoin(t *testing.T) {
 
 	fmt.Println("Test: rejoin of partitioned leader...")
 
+	debugln(TestStream, fmt.Sprintf("Sending an entry to %v (leader1)", cfg.checkOneLeader()))
+
 	cfg.one(101, servers)
 
 	// leader network failure
 	leader1 := cfg.checkOneLeader()
+
+	debugln(TestStream, fmt.Sprintf("Disconnecting %v (leader1)", leader1))
+
 	cfg.disconnect(leader1)
 
 	// make old leader try to agree on some entries
+	debugln(TestStream, fmt.Sprintf("Sending 3 entries to %v (leader1), now disconnected", leader1))
 	cfg.rafts[leader1].Start(102)
 	cfg.rafts[leader1].Start(103)
 	cfg.rafts[leader1].Start(104)
 
 	// new leader commits, also for index=2
+	debugln(TestStream, fmt.Sprintf("Sending an entry to %v (leader2)", cfg.checkOneLeader()))
 	cfg.one(103, 2)
 
 	// new leader network failure
 	leader2 := cfg.checkOneLeader()
+
+	debugln(TestStream, fmt.Sprintf("Disconnecting %v (leader2)", leader2))
+
 	cfg.disconnect(leader2)
 
 	// old leader connected again
+	debugln(TestStream, fmt.Sprintf("Reconnecting %v (leader1)", leader1))
 	cfg.connect(leader1)
 
+	debugln(TestStream, fmt.Sprintf("Sending an entry to %v (leader3)", cfg.checkOneLeader()))
 	cfg.one(104, 2)
 
 	// all together now
+	debugln(TestStream, fmt.Sprintf("Reconnecting %v (leader2)", leader2))
 	cfg.connect(leader2)
 
+	debugln(TestStream, fmt.Sprintf("Sending an entry to %v (leader3)", cfg.checkOneLeader()))
 	cfg.one(105, servers)
 
 	fmt.Println("... Passed")

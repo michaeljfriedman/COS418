@@ -34,21 +34,20 @@ Part I - Appending log entries and reaching consensus
   * TestConcurrentStarts
   * TestRejoin
   - TestBackup
-    - Whenever a leader/candidate gets a reply with a *later* term, step down
+    * Whenever a leader/candidate gets a reply with a *later* term, step down
       and become a follower.
-      - AppendEntries:
-        - AppendEntries() should set reply.Term to rf.currentTerm at beginning
-          (already does in every reply, but you can factor this out to the
-          beginning).
-        - sendAppendEntries() should revert me to follower upon receiving
+      * AppendEntries:
+        * AppendEntries() should set reply.Term to rf.currentTerm at beginning,
+          but if you also update your term, make sure to update reply.Term.
+        * sendAppendEntries() should revert me to follower upon receiving
           "Stale" reply (no need to also reset votedFor though). After
           receiving reply, do everything *while locked*.
-      - RequestVote:
-        - sendRequestVote() should not set any values in reply. Just init
+      * RequestVote:
+        * RequestVote() should set reply.Term to rf.currentTerm at beginning
+        * requestVoteFrom() should not set any values in reply. Just init
           an empty one.
-        - RequestVote() should set reply.Term to rf.currentTerm at beginning
-        - runForLeader() should reset votedFor upon receiving any outcome,
-          then do everything else the same *while locked*.
+        * runForLeader() should reset votedFor upon receiving any outcome,
+          then do everything else the same, but *while locked*.
   - TestCount
 
 

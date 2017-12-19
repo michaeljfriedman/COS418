@@ -110,19 +110,9 @@ const Stale = 3
 // election
 const NoOne = -1
 
-// Consensus outcomes. "Stale" (defined above) is also a valid value.
-//
-// ("Stale" in this context indicates that I was superseded by a new leader,
-// so all my pending consensuses are invalid.)
+// AppendEntries reply statuses
 const Success = 0
-
-// AppendEntries reply statuses. "Success" and "Stale" (defined above) are also
-// valid values.
-//
-// ("Stale" in this context indicates that the term the AppendEntries message
-// was outdated on receipt.)
 const Failure = 1
-const WasntReady = 2  // indicates recipient was not a follower when AppendEntries was sent. Try again to append log entries.
 
 //------------------------------------------------------------------------------
 
@@ -294,6 +284,10 @@ func (rf *Raft) majority() int {
 // be called again when a heartbeat is received.
 //
 func (rf *Raft) waitForLeaderToDie() {
+	if rf.heartbeatTimer != nil {
+		rf.heartbeatTimer.Stop()
+	}
+
 	rf.heartbeatTimer = electionTimer()
 
 	<-rf.heartbeatTimer.C
@@ -378,9 +372,13 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 	}()
 
-	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
-		// I'm running in an outdated election. I stop my outdated candidacy
-		rf.electionOutcome <- Stale
+	if args.Term > rf.currentTerm {
+		if rf.leaderStatus == Leader {
+			rf.stepDown(Leader)
+		} else if rf.leaderStatus == Candidate {
+			// I'm running in an outdated election. I stop my outdated candidacy
+			rf.electionOutcome <- Stale
+		}
 	}
 
 	if !rf.canBeLeader(args) {
@@ -573,10 +571,15 @@ func (rf *Raft) runForLeader() {
 			debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
 
 			go rf.runForLeader()
+
 		} else if outcome == Stale {
 			// I realized I am running in an outdated election. Stop running.
 			rf.electionTimer.Stop()
 			rf.leaderStatus = Follower
+
+			// The new election may not result in a new leader, but make sure I
+			// start waiting in case I need to start a new election.
+			go rf.waitForLeaderToDie()
 		}
 	}()
 }
@@ -696,12 +699,14 @@ func (rf *Raft) deleteEntriesFrom(index int) {
 }
 
 //
-// Steps down to follower, given the old leader status as either
-// Leader or Candidate.
+// Steps down to follower, given the old leader status as either Leader
+// or Candidate.
 //
 // Note: This should be called *while locked*
 //
 func (rf *Raft) stepDown(oldLeaderStatus int) {
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is stepping down as leader", rf.currentTerm, rf.me))
+
 	// Drop down to follower
 	rf.leaderStatus = Follower
 
@@ -746,7 +751,6 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Start waiting for heartbeats again when you're done here
 	defer func() {
-		rf.heartbeatTimer.Stop()
 		go rf.waitForLeaderToDie()
 	}()
 
@@ -756,8 +760,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// Set term for the reply
 	reply.Term = rf.currentTerm
 
-	// Step down to follower if necessary
-	if rf.leaderStatus == Leader || rf.leaderStatus == Follower {
+	// Step down to follower, if necessary
+	if rf.leaderStatus == Leader || rf.leaderStatus == Candidate {
 		rf.stepDown(rf.leaderStatus)
 	}
 

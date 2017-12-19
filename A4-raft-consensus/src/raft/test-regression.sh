@@ -14,6 +14,7 @@ tests=(
   TestFailNoAgree
   TestConcurrentStarts
   TestRejoin
+  TestBackup
 )
 
 #----------------------------

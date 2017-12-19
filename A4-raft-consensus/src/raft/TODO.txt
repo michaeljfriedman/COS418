@@ -57,9 +57,7 @@ Part I REDESIGN
 
 (Throughout this, be careful with your use of locks. Anywhere you need to change state atomically, lock. But make sure it's not possible for some code to be waiting forever for a lock.)
 
-Then as an extra thing, delete extra debug statements:
-- All locking debug statements
-- The stuff under "// Mark these entries replicated, if applicable" in sendAppendEntries()
+6. Make sure sendRoundOfUpdates() sends all the AE messages before stepping down and clearing nextIndex[] and matchIndex[] (i.e. before the leader receives a AE failure due to old term).
 
 
 Part II - Handling failures/persistence

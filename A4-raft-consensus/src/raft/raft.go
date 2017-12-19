@@ -304,39 +304,6 @@ func (rf *Raft) waitForLeaderToDie() {
 }
 
 //
-// Sends a heartbeat messages to all followers. Should only be called by
-// the leader.
-//
-func (rf *Raft) sendRoundOfUpdates() {
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
-
-	for peerId, _ := range rf.peers {
-		// Skip me
-		if peerId == rf.me {
-			continue
-		}
-
-		go rf.sendUpdateTo(peerId)
-	}
-}
-
-
-//
-// As leader, sends heartbeats periodically to other servers to let them
-// know I'm still alive.
-//
-func (rf *Raft) sendPeriodicUpdates() {
-	for rf.leaderStatus == Leader {
-		rf.sendRoundOfUpdates()
-
-		timer := leaderHeartbeatTimer()
-		<-timer.C
-	}
-}
-
-
-
-//
 // example RequestVote RPC arguments structure.
 // See paper section 5.2 for reference
 //
@@ -741,14 +708,8 @@ func (rf *Raft) stepDown(oldLeaderStatus int) {
 	// Reset who I voted for
 	rf.votedFor = NoOne
 
-	if oldLeaderStatus == Leader {
-		// Clear leader state: nextIndex, matchIndex
-		for i := 0; i < len(rf.peers); i++ {
-			rf.nextIndex[i] = 0
-			rf.matchIndex[i] = 0
-		}
-	} else if oldLeaderStatus == Candidate {
-		// I lost the election
+	if oldLeaderStatus == Candidate {
+		// I lost the election. Also mark the outcome as Lost
 		rf.electionOutcome <- Lost
 	}
 }
@@ -863,6 +824,40 @@ func (rf *Raft) reachedConsensus(index int) bool {
 }
 
 //
+// As leader, sends heartbeats periodically to other servers to let them
+// know I'm still alive.
+//
+func (rf *Raft) sendPeriodicUpdates() {
+	for rf.leaderStatus == Leader {
+		rf.mu.Lock()
+		rf.sendRoundOfUpdates()
+		rf.mu.Unlock()
+
+		timer := leaderHeartbeatTimer()
+		<-timer.C
+	}
+}
+
+//
+// Sends a heartbeat messages to all followers. Should only be called by
+// the leader.
+//
+// Note: This must be called *while locked*.
+//
+func (rf *Raft) sendRoundOfUpdates() {
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
+
+	for peerId, _ := range rf.peers {
+		// Skip me
+		if peerId == rf.me {
+			continue
+		}
+
+		go rf.sendUpdateTo(peerId)
+	}
+}
+
+//
 // Sends an AppendEntries message to the provided server. This serves as both
 // a heartbeat and an update with new log entries and/or commits. It also
 // processes the reply, and commits new entries if they reach consensus.
@@ -913,11 +908,10 @@ func (rf *Raft) sendUpdateTo(server int) {
 		// Initialize empty reply
 		reply = &AppendEntriesReply{}
 
-		// DEBUG statements
 		if len(args.Entries) > 0 {
-			debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, args.LeaderCommit, prevLogIndex))
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, rf.commitIndex, prevLogIndex))
 		} else {
-			debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, args.LeaderCommit, prevLogIndex))
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, rf.commitIndex, prevLogIndex))
 		}
 	}()
 
@@ -945,12 +939,6 @@ func (rf *Raft) sendUpdateTo(server int) {
 			// I am no longer a valid leader. Step down.
 			rf.stepDown(Leader)
 			return
-		}
-
-		// Sanity check. Reply term should be equal to mine at this point (can't be
-		// less, otherwise that means the recipient didn't update his term properly)
-		if reply.Term != rf.currentTerm {
-			log.Fatalf("AppendEntries reply.Term was invalid. Was %v, but should have been %v", reply.Term, rf.currentTerm)
 		}
 
 		// Process reply

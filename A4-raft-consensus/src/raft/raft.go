@@ -110,19 +110,9 @@ const Stale = 3
 // election
 const NoOne = -1
 
-// Consensus outcomes. "Stale" (defined above) is also a valid value.
-//
-// ("Stale" in this context indicates that I was superseded by a new leader,
-// so all my pending consensuses are invalid.)
+// AppendEntries reply statuses
 const Success = 0
-
-// AppendEntries reply statuses. "Success" and "Stale" (defined above) are also
-// valid values.
-//
-// ("Stale" in this context indicates that the term the AppendEntries message
-// was outdated on receipt.)
 const Failure = 1
-const WasntReady = 2  // indicates recipient was not a follower when AppendEntries was sent. Try again to append log entries.
 
 //------------------------------------------------------------------------------
 
@@ -190,9 +180,6 @@ type LogEntry struct {
 
 	// Extra attributes
 	Index            int      // index of this entry in the log
-	NumReplications  int      // num servers that replicated this entry (<= majority)
-	ConsensusOutcome chan int // Success or Stale. Use chan so reading will block
-	                          // until consensus has been reached
 }
 
 // return currentTerm and whether this server
@@ -297,6 +284,10 @@ func (rf *Raft) majority() int {
 // be called again when a heartbeat is received.
 //
 func (rf *Raft) waitForLeaderToDie() {
+	if rf.heartbeatTimer != nil {
+		rf.heartbeatTimer.Stop()
+	}
+
 	rf.heartbeatTimer = electionTimer()
 
 	<-rf.heartbeatTimer.C
@@ -305,39 +296,6 @@ func (rf *Raft) waitForLeaderToDie() {
 
 	go rf.runForLeader()
 }
-
-//
-// Sends a heartbeat messages to all followers. Should only be called by
-// the leader.
-//
-func (rf *Raft) sendRoundOfHeartbeats() {
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
-
-	for peerId, _ := range rf.peers {
-		// Skip me
-		if peerId == rf.me {
-			continue
-		}
-
-		go rf.sendAppendEntries(peerId)
-	}
-}
-
-
-//
-// As leader, sends heartbeats periodically to other servers to let them
-// know I'm still alive.
-//
-func (rf *Raft) sendPeriodicHeartbeats() {
-	for rf.leaderStatus == Leader {
-		rf.sendRoundOfHeartbeats()
-
-		timer := leaderHeartbeatTimer()
-		<-timer.C
-	}
-}
-
-
 
 //
 // example RequestVote RPC arguments structure.
@@ -392,12 +350,8 @@ func (rf *Raft) canBeLeader(args RequestVoteArgs) bool {
 //
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from RequestVote()", rf.currentTerm, rf.me))
 	rf.mu.Lock()  // read/update currentTerm and votedFor atomically
-	defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from RequestVote()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 
 	//---------------
 	// Base cases
@@ -418,9 +372,14 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.currentTerm = args.Term
 	}()
 
-	if rf.leaderStatus == Candidate && args.Term > rf.currentTerm {
-		// I'm running in an outdated election. I stop my outdated candidacy
-		rf.electionOutcome <- Stale
+	if args.Term > rf.currentTerm {
+		if rf.leaderStatus == Leader {
+			// I am no longer a valid leader. Step down.
+			rf.stepDown()
+		} else if rf.leaderStatus == Candidate {
+			// I'm running in an outdated election. I stop my outdated candidacy
+			rf.electionOutcome <- Stale
+		}
 	}
 
 	if !rf.canBeLeader(args) {
@@ -512,12 +471,8 @@ func (rf *Raft) runForLeader() {
 	// already started running before me. `proceed` indicates whether I can
 	// proceed with my election.
 	proceed := func() bool {
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from runForLeader()", rf.currentTerm, rf.me))
 		rf.mu.Lock()  // need to vote for myself atomically
-		defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from runForLeader()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-		}()
+		defer rf.mu.Unlock()
 
 		// Check if, to my knowledge, anyone has already started running before me
 		if rf.votedFor != NoOne {
@@ -581,20 +536,24 @@ func (rf *Raft) runForLeader() {
 	func() {
 		// Ending an election will update all election variables. This must
 		// be done atomically.
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock 2 from runForLeader()", rf.currentTerm, rf.me))
 		rf.mu.Lock()
-		defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock 2 from runForLeader()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-		}()
+		defer rf.mu.Unlock()
 
 		// Reset who I voted for
 		rf.votedFor = NoOne
 
-		// Process outcome (won, lost, or timeout)
+		// Process outcome (won, lost, stale, or timeout)
+		if outcome == Timeout {
+			// Restart election
+			debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
+
+			go rf.runForLeader()
+			return
+		}
+
+		rf.electionTimer.Stop()
 		if outcome == Won {
 			// I become leader
-			rf.electionTimer.Stop()
 			rf.leaderStatus = Leader
 
 			// Initialize vars I need to keep track of as leader (see section 5.3)
@@ -604,27 +563,25 @@ func (rf *Raft) runForLeader() {
 				rf.matchIndex[peerId] = 0
 			}
 
-			// Start sending periodic heartbeats to other servers to indicate
+			// Start sending periodic updates (heartbeats) to other servers to indicate
 			// that I'm their new leader
-			go rf.sendPeriodicHeartbeats()
+			go rf.sendPeriodicUpdates()
 
 			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is now leader", rf.currentTerm, rf.me))
 
 			debugln(ElectionStream, fmt.Sprintf("Term %v: %v has won election and sent notifs to other servers", rf.currentTerm, rf.me))
 		} else if outcome == Lost {
-			// I become follower
-			rf.electionTimer.Stop()
-			rf.leaderStatus = Follower
+			// Step down to new leader
+			rf.stepDown()
 
-		} else if outcome == Timeout {
-			// Restart election
-			debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
-
-			go rf.runForLeader()
 		} else if outcome == Stale {
-			// I realized I am running in an outdated election. Stop running.
-			rf.electionTimer.Stop()
-			rf.leaderStatus = Follower
+			// I realized I am running in an outdated election. Step down to new
+			// leader.
+			rf.stepDown()
+
+			// The new election may not result in a new leader, but make sure I
+			// start waiting in case I need to start a new election.
+			go rf.waitForLeaderToDie()
 		}
 	}()
 }
@@ -744,33 +701,42 @@ func (rf *Raft) deleteEntriesFrom(index int) {
 }
 
 //
-// AppendEntries RPC handler. Processes a heartbeat. If I'm the leader,
-// I step down to the caller (new leader). If I'm a candidate, I declare
-// that I've lost the election to the caller (new leader). If I'm a follower,
-// note that the leader is still alive, replicate my log, and reply.
+// Steps down from leader or candidate to follower.
 //
-// Note there is no reply unless I am a follower.
+// Note: This should be called *while locked*
+//
+func (rf *Raft) stepDown() {
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is stepping down as leader", rf.currentTerm, rf.me))
+
+	// Drop down to follower
+	rf.leaderStatus = Follower
+
+	// Reset who I voted for
+	rf.votedFor = NoOne
+}
+
+//
+// AppendEntries RPC handler. Processes a heartbeat/update. Reject a request
+// from an old term. Otherwise, if I'm the leader or a candidate, I step down
+// to follower. Then I append any new entries and/or commit entries in the
+// mesage, and reply.
 //
 // (Ref paper figure 2 and section 5)
 //
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Update election status and potentially apply log entries. Must
 	// do this all *atomically*
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from AppendEntries()", rf.currentTerm, rf.me))
 	rf.mu.Lock()
-	defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from AppendEntries()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 
 	reply.Id = args.Id
 
 	if args.Term < rf.currentTerm {
 		// Message is from an old term
-		reply.Status = Stale
+		reply.Status = Failure
 		reply.Term = rf.currentTerm
 
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'stale'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v failure (old term)", rf.currentTerm, rf.me, args.LeaderId, args.Id))
 
 		return
 	}
@@ -787,211 +753,241 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// Update my term
 	rf.currentTerm = args.Term
 
+	// Set term for the reply
 	reply.Term = rf.currentTerm
+
+	// If I'm a leader, step down
 	if rf.leaderStatus == Leader {
-		// I step down to new leader
-		rf.leaderStatus = Follower
-		rf.votedFor = NoOne
-
-		// Clear nextIndex, matchIndex
-		for i := 0; i < len(rf.peers); i++ {
-			rf.nextIndex[i] = 0
-			rf.matchIndex[i] = 0
-		}
-
-		// Mark all pending consensus outcomes as "stale"
-		for i := rf.commitIndex+1; i < len(rf.log); i++ {
-			if rf.log[i].Index > rf.commitIndex {
-				rf.log[i].ConsensusOutcome <- Stale
-			}
-		}
-
-		// Reply "wasn't ready"
-		reply.Status = WasntReady
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'wasn't ready'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
-	} else if rf.leaderStatus == Candidate {
-		// I lost
-		rf.electionOutcome <- Lost
-
-		// Reply "wasn't ready"
-		reply.Status = WasntReady
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v 'wasn't ready'", rf.currentTerm, rf.me, args.LeaderId, args.Id))
-	} else if rf.leaderStatus == Follower {
-		// Reset heartbeat timer for leader
-		rf.heartbeatTimer.Stop()
-
-		// Since this may also be the result of an election, reset who I voted for
-		rf.votedFor = NoOne
-
-		//--------------------------------------------
-		// Replicate leader's log (or ask for more
-		// entries if needed)
-		//--------------------------------------------
-
-		if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
-			// Logs out of sync. Ask for more entries
-			reply.Status = Failure
-
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure", rf.currentTerm, rf.me, args.LeaderId, args.Id))
-
-			return
-		}
-
-		// Delete conflicting entries
-		firstNewIndex := rf.deleteConflicts(args)
-
-		// Append entries not in log
-		if firstNewIndex != -1 {
-			for i := firstNewIndex; i < len(args.Entries); i++ {
-				rf.log = append(rf.log, args.Entries[i])
-				rf.logString = rf.logToString()  // DEBUG
-			}
-		}
-
-
-		//----------------------------------------------
-		// Commit and apply new entries (if applicable)
-		//----------------------------------------------
-
-		if args.LeaderCommit > rf.commitIndex {
-			lastLogIndex := len(rf.log) - 1
-			newCommitIndex := int(math.Min(float64(args.LeaderCommit), float64(lastLogIndex)))
-			rf.applyLogEntries(newCommitIndex)
-		}
-
-		// Reply
-		reply.Status = Success
-
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success. (log = %v)", rf.currentTerm, rf.me, args.LeaderId, args.Id, rf.logString))
+		rf.stepDown()
 	}
+
+	// If I'm a candidate, mark that I've lost the election
+	if rf.leaderStatus == Candidate {
+		rf.electionOutcome <- Lost
+	}
+
+	// Since this may also be the result of an election, reset who I voted for
+	rf.votedFor = NoOne
+
+	//--------------------------------------------
+	// Replicate leader's log (or ask for more
+	// entries if needed)
+	//--------------------------------------------
+
+	if !rf.logsMatchThrough(args.PrevLogIndex, args.PrevLogTerm) {
+		// Logs out of sync. Ask for more entries
+		reply.Status = Failure
+
+		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with failure (prevLogIndex doesn't match)", rf.currentTerm, rf.me, args.LeaderId, args.Id))
+
+		return
+	}
+
+	// Delete conflicting entries
+	firstNewIndex := rf.deleteConflicts(args)
+
+	// Append entries not in log
+	if firstNewIndex != -1 {
+		for i := firstNewIndex; i < len(args.Entries); i++ {
+			rf.log = append(rf.log, args.Entries[i])
+			rf.logString = rf.logToString()  // DEBUG
+		}
+	}
+
+	//----------------------------------------------
+	// Commit and apply new entries (if applicable)
+	//----------------------------------------------
+
+	if args.LeaderCommit > rf.commitIndex {
+		lastLogIndex := len(rf.log) - 1
+		newCommitIndex := int(math.Min(float64(args.LeaderCommit), float64(lastLogIndex)))
+		rf.applyLogEntries(newCommitIndex)
+	}
+
+	// Reply
+	reply.Status = Success
+
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v replied to %v (leader) AE %v with success. (log = %v)", rf.currentTerm, rf.me, args.LeaderId, args.Id, rf.logString))
 
 }
 
 //
+// Returns bool indicating whether or not a majority of servers have replicated
+// the log entry given by `index`.
+//
+// Note: This function should be called *while locked*.
+//
+func (rf *Raft) reachedConsensus(index int) bool {
+	numReplicated := 0
+	for i := 0; i < len(rf.peers); i++ {
+		if rf.matchIndex[i] >= index {
+			numReplicated++
+		}
+	}
+
+	return (numReplicated >= rf.majority())
+}
+
+//
+// As leader, sends heartbeats periodically to other servers to let them
+// know I'm still alive.
+//
+func (rf *Raft) sendPeriodicUpdates() {
+	for rf.leaderStatus == Leader {
+		rf.mu.Lock()
+		rf.sendRoundOfUpdates()
+		rf.mu.Unlock()
+
+		timer := leaderHeartbeatTimer()
+		<-timer.C
+	}
+}
+
+//
+// Sends a heartbeat messages to all followers. Should only be called by
+// the leader.
+//
+// Note: This must be called *while locked*.
+//
+func (rf *Raft) sendRoundOfUpdates() {
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) is sending round of heartbeats. (commitIndex = %v, nextIndex = %v, matchIndex = %v)", rf.currentTerm, rf.me, rf.commitIndex, rf.nextIndex, rf.matchIndex))
+
+	for peerId, _ := range rf.peers {
+		// Skip me
+		if peerId == rf.me {
+			continue
+		}
+
+		go rf.sendUpdateTo(peerId)
+	}
+}
+
+//
 // Sends an AppendEntries message to the provided server. This serves as both
-// a heartbeat and an attempt to send necessary information to put the server's
-// log in sync with the sender's (i.e. the leader's).
+// a heartbeat and an update with new log entries and/or commits. It also
+// processes the reply, and commits new entries if they reach consensus.
 //
 // By the time this terminates, it is *not* guaranteed that the recipient's log
-// is in sync with the leader's - you may require another call. However, all
-// parameters for the next call are set in the first call, so you can just call
-// it again immediately if it's required. Also, as noted in the paper (section
+// is in sync with the leader's - you may require another call in the next
+// heartbeat. However, all parameters for the next call are set in the first
+// one so you can just call it again. Also, as noted in the paper (section
 // 5.5), these messages are idempotent, so there's no harm in calling this
 // more times than is necessary.
 //
-func (rf *Raft) sendAppendEntries(server int) {
-	// Make args for message. Send entries from nextIndex to end (or empty
-	// if out of range)
-	nextIndex := rf.nextIndex[server]
-	var entries []*LogEntry
-	if nextIndex <= len(rf.log) - 1 {
-		entries = rf.log[nextIndex:]
-	}
+func (rf *Raft) sendUpdateTo(server int) {
+	// Make args and init empty reply for message. Need to read from the log,
+	// so it must be done atomically.
+	var args AppendEntriesArgs
+	var reply *AppendEntriesReply
+	func() {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 
-	prevLogIndex := nextIndex - 1
-	var prevLogTerm int
-	if prevLogIndex > 0 {
-		prevLogTerm = rf.log[prevLogIndex].Term
-	} else {
-		prevLogTerm = -1  // no entry here, so no term
-	}
+		// Send entries from nextIndex to end (or empty if nextIndex is out of range)
+		nextIndex := rf.nextIndex[server]
+		var entries []*LogEntry
+		if nextIndex <= len(rf.log) - 1 {
+			entries = rf.log[nextIndex:]
+		}
 
-	// Make args for message
-	args := AppendEntriesArgs{
-		rf.currentTerm,
-		rf.me,
-		prevLogIndex,
-		prevLogTerm,
-		rf.commitIndex,
-		entries,
-		rf.appendEntriesId,
-	}
-	rf.appendEntriesId++
+		prevLogIndex := nextIndex - 1
+		var prevLogTerm int
+		if prevLogIndex > 0 {
+			prevLogTerm = rf.log[prevLogIndex].Term
+		} else {
+			prevLogTerm = -1  // no entry here, so no term
+		}
 
-	// Initialize empty reply
-	reply := &AppendEntriesReply{}
+		// Make args for message
+		args = AppendEntriesArgs{
+			rf.currentTerm,
+			rf.me,
+			prevLogIndex,
+			prevLogTerm,
+			rf.commitIndex,
+			entries,
+			rf.appendEntriesId,
+		}
+		rf.appendEntriesId++
 
-	if len(args.Entries) > 0 {
-		debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, args.LeaderCommit, prevLogIndex))
-	} else {
-		debugln(ConsensusStream, fmt.Sprintf("Term: %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, args.LeaderCommit, prevLogIndex))
-	}
+		// Initialize empty reply
+		reply = &AppendEntriesReply{}
+
+		if len(args.Entries) > 0 {
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) sent AE %v to %v. (entries = [%v..%v], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, nextIndex, len(rf.log)-1, rf.commitIndex, prevLogIndex))
+		} else {
+			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) sent AE %v to %v. (entries = [], commitIndex = %v, prevLogIndex = %v)", rf.currentTerm, rf.me, args.Id, server, rf.commitIndex, prevLogIndex))
+		}
+	}()
 
 	// Send message, get reply
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 
+	// Process the reply. This may change the log, so it must be done
+	// atomically.
 	func() {
-		// Processing the reply will change log info. This must be done
-		// atomically.
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from sendAppendEntries()", rf.currentTerm, rf.me))
 		rf.mu.Lock()
-		defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from sendAppendEntries()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-		}()
+		defer rf.mu.Unlock()
 
-		if !ok || reply.Status == WasntReady {
-			// Server never replied or wasn't a follower at time of sending. Just try
-			// again in next heartbeat.
+		if !ok {
+			// Server never replied. Try again next heartbeat.
 
 			// DEBUG: Only log if still the leader, to avoid cluttering the logs
 			if rf.leaderStatus == Leader {
-				if !ok {
-					debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) didn't get AE %v reply from %v", rf.currentTerm, rf.me, args.Id, server))
-				} else {
-					debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got AE %v reply 'wasnt ready' from %v", rf.currentTerm, rf.me, args.Id, server))
-				}
+				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) didn't get AE %v reply from %v", rf.currentTerm, rf.me, args.Id, server))
 			}
 
+			return
+		}
 
+		if reply.Term > rf.currentTerm {
+			// I am no longer a valid leader. Step down.
+			rf.stepDown()
 			return
 		}
 
 		// Process reply
 		if reply.Status == Success {
+			// Log was successfully replicated
 			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got success AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
 
-			// Mark these entries replicated, if applicable
-			for _, entry := range args.Entries {
-				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) in for loop AE %v", rf.currentTerm, rf.me, reply.Id))
-				if entry.Index > rf.commitIndex && entry.Index > rf.matchIndex[server] { /* still pending consensus, and not yet replicated on that server */
-					entry.NumReplications++
-					if entry.NumReplications == rf.majority() {
-						debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) marking entry #%v ConsensusOutcome <- Success", rf.currentTerm, rf.me, entry.Index))
-						entry.ConsensusOutcome <- Success
-						debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) done marking entry #%v ConsensusOutcome <- Success", rf.currentTerm, rf.me, entry.Index))
+			if len(args.Entries) > 0 {
+				// Mark these entries replicated on that server (if there were any), by
+				// updating matchIndex and nextIndex.
+				newMatchIndex := args.Entries[len(args.Entries)-1].Index
+				if newMatchIndex > rf.matchIndex[server] {
+					rf.matchIndex[server] = newMatchIndex // matches up to end of args.Entries
+					rf.nextIndex[server] = rf.matchIndex[server] + 1
+				}
+
+				// Commit/apply entries if they reached consensus. Start from the
+				// end of args.Entries, since committing one entry also commits
+				// everything before it.
+				for i := len(args.Entries)-1; i >= 0; i-- {
+					entry := args.Entries[i]
+					if rf.commitIndex < entry.Index && rf.reachedConsensus(entry.Index) && entry.Term == rf.currentTerm { /* still pending consensus, and not yet replicated on that server, and not from an old term */
+						debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, entry.Index))
+
+						// Reached consensus! Apply the entries
+						rf.applyLogEntries(entry.Index)
+
+						// Immediately tell other servers that these entries can be
+						// committed. (Must do this now, instead of at the next heartbeat,
+						// since I could be told to step down before then, and the message
+						// would never go out.)
+						rf.sendRoundOfUpdates()
+
+						break
 					}
 				}
 			}
-
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) finished marking entries replicated AE %v", rf.currentTerm, rf.me, reply.Id))
-
-			// Reset nextIndex, matchIndex for that server
-			if len(args.Entries) > 0 {
-				newMatchIndex := args.Entries[len(args.Entries) - 1].Index
-				if newMatchIndex > rf.matchIndex[server] {
-					rf.matchIndex[server] = newMatchIndex  // matches up to end of args.Entries
-				rf.nextIndex[server] = rf.matchIndex[server] + 1
-				}
-			}
-
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) finished updating nextIndex, matchIndex AE %v", rf.currentTerm, rf.me, reply.Id))
 
 		} else if reply.Status == Failure {
 			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got failure AE %v reply from %v", rf.currentTerm, rf.me, reply.Id, server))
 
 			// Set nextIndex for next call
 			rf.nextIndex[server]--
-		} else if reply.Status == Stale {
-			// The replier had a later term than me. I am no longer a valid leader.
-			rf.leaderStatus = Follower
-			go rf.waitForLeaderToDie()
-
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got stale AE %v reply from %v. Stepping down as leader.", rf.currentTerm, rf.me, reply.Id, server))
 		}
-
 	}()
 }
 
@@ -1015,12 +1011,8 @@ func (rf *Raft) sendAppendEntries(server int) {
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Append to my log *atomically*
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from Start()", rf.currentTerm, rf.me))
 	rf.mu.Lock()
-	defer func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from Start()", rf.currentTerm, rf.me))
-			rf.mu.Unlock()
-	}()
+	defer rf.mu.Unlock()
 
 	// Do not accept commands if not the leader
 	if rf.leaderStatus != Leader {
@@ -1033,63 +1025,19 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		command,
 		rf.currentTerm,
 		newEntryIndex,
-		0,                 // NumReplications
-		make(chan int, 1), // ConsensusOutcome
 	}
 	rf.log = append(rf.log, newEntry)
 	rf.logString = rf.logToString()  // DEBUG
 
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log. (log = %v)", rf.currentTerm, rf.me, newEntry.Index, rf.logString))
+	// Mark replicated on myself
+	rf.matchIndex[rf.me] = newEntry.Index
 
 	// Update index for the next log entry
 	rf.nextIndex[rf.me] = newEntry.Index + 1
-	rf.matchIndex[rf.me] = newEntry.Index
 
-	// Start a consensus procedure on this entry
-	go rf.getConsensus(newEntry)
+	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) added entry #%v to his log. (log = %v)", rf.currentTerm, rf.me, newEntry.Index, rf.logString))
 
 	return newEntry.Index, rf.currentTerm, true
-}
-
-
-//
-// Runs the consensus protocol to replicate the log at followers.
-//
-// By the time this terminates, the command has either been committed or
-// discarded for deletion.
-//
-func (rf *Raft) getConsensus(newEntry *LogEntry) {
-	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) began consensus for entry #%v", rf.currentTerm, rf.me, newEntry.Index))
-
-	// Mark replicated on myself
-	newEntry.NumReplications++
-
-	// Wait for consensus outcome
-	outcome := <-newEntry.ConsensusOutcome
-	if outcome == Success {
-		debugln(ConsensusStream, fmt.Sprintf("Term %v: %v (leader) got consensus for entry #%v", rf.currentTerm, rf.me, newEntry.Index))
-
-		// Consensus was reached! I can commit/apply this entry
-		func() {
-			debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is grabbing lock from getConsensus", rf.currentTerm, rf.me))
-			rf.mu.Lock()  // need to apply entries atomically-
-			defer func() {
-				debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is releasing lock from getConsensus", rf.currentTerm, rf.me))
-				rf.mu.Unlock()
-			}()
-
-			if rf.lastApplied < newEntry.Index && !(newEntry.Term < rf.currentTerm) {
-				rf.applyLogEntries(newEntry.Index)
-			}
-
-			// Tell other servers that these entries can be committed.
-			// (Must do this now, instead of at the next heartbeat, since I could be
-			// told to step down before then, and the message would never go out.)
-			rf.sendRoundOfHeartbeats()
-		}()
-	} else if outcome == Stale {
-		// Do nothing. If stale, this entry will be deleted soon anyway.
-	}
 }
 
 

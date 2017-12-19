@@ -34,21 +34,31 @@ Part I - Appending log entries and reaching consensus
   * TestConcurrentStarts
   * TestRejoin
   - TestBackup
-    * Whenever a leader/candidate gets a reply with a *later* term, step down
-      and become a follower.
-      * AppendEntries:
-        * AppendEntries() should set reply.Term to rf.currentTerm at beginning,
-          but if you also update your term, make sure to update reply.Term.
-        * sendAppendEntries() should revert me to follower upon receiving
-          "Stale" reply (no need to also reset votedFor though). After
-          receiving reply, do everything *while locked*.
-      * RequestVote:
-        * RequestVote() should set reply.Term to rf.currentTerm at beginning
-        * requestVoteFrom() should not set any values in reply. Just init
-          an empty one.
-        * runForLeader() should reset votedFor upon receiving any outcome,
-          then do everything else the same, but *while locked*.
   - TestCount
+
+Part I REDESIGN
+---------------
+
+**Goal**: simplify. Eliminate all consensus state maintained by the log entries themselves, and instead use just the commitIndex and matchIndex[] to keep track of what's achieved consensus.
+
+1. Remove consensus state from log entries.
+
+2. Remove getConsensus(). Instead, just append the entry to leader's log in Start(), and the next heartbeat will send AE *and* process the consensus.
+
+3. Rename heartbeat-related methods: sendPeriodicUpdates(), sendRoundOfUpdates(), and sendAppendEntries() -> sendUpdateTo(). The first two remain unchanged, but sendUpdateTo() will send AE to a server and *fully* process the result (including updating consensus for the entries sent). Thus you need to cover the 3 possible consensus outcomes previously in getConsensus(): success, failure, and stale.
+
+  - Stale: if the reply's term is later, don't process the reply. Instead, step down as leader (and update your term)
+  - Failure: same as before
+  - Success: same as before, but use commitIndex to determine if the entry has already been committed, and if not, use matchIndex[] to count reps and determine if you have reached consensus. Then if there's consenus, apply the entries immediately, and call sendRoundOfUpdates() in bg immediately.
+
+4. Make sure repliers in AppendEntries() set the reply term to *their term* (after updating it, if applicable)
+
+5. Make a new method stepDown(), which standardizes the process of stepping down, and is called anywhere the leader/candidate should step down (most notably, in the stale case in sendUpdateTo()).
+  * Rework election outcome system so that stepDown() is the only place where rf.leaderStatus is set to Follower (i.e. all step-downs are routed through this function.)
+
+(Throughout this, be careful with your use of locks. Anywhere you need to change state atomically, lock. But make sure it's not possible for some code to be waiting forever for a lock.)
+
+6. Make sure sendRoundOfUpdates() sends all the AE messages before stepping down and clearing nextIndex[] and matchIndex[] (i.e. before the leader receives a AE failure due to old term).
 
 
 Part II - Handling failures/persistence
@@ -86,18 +96,4 @@ Suggestions from listening at lab TAs:
 - If you need to reference log size throughout a whole function, store it
   at the beginning and use that size, since it could change throughout the
   function.
-
-
-What I can/should do now
-------------------------
-* Lock for doConsensus:
-  * Start() should return nextIndex[rf.me] instead of len(rf.log)
-  * doConsensus() should lock from beginning until entry has been appended to
-    log, and nextIndex is updated
-
-* Lock for elections:
-  * Lock all of RequestVote()
-  * Move "if rf.voterFor == NoOne" from waitForLeaderToDie() to runForLeader()
-  * Lock runForLeader() from the if statement above until I've finished
-    voting for myself
 

@@ -15,6 +15,7 @@ tests=(
   TestConcurrentStarts
   TestRejoin
   TestBackup
+  TestCount
 )
 
 #----------------------------

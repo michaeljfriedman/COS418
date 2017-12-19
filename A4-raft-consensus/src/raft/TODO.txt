@@ -27,14 +27,14 @@ Part I - Appending log entries and reaching consensus
   * AppendEntries()
   * logsMatchThrough()
 
-- Debug tests:
+* Debug tests:
   * TestBasicAgree
   * TestFailAgree
   * TestFailNoAgree
   * TestConcurrentStarts
   * TestRejoin
-  - TestBackup
-  - TestCount
+  * TestBackup
+  * TestCount
 
 Part I REDESIGN
 ---------------
@@ -54,7 +54,6 @@ Part I REDESIGN
 4. Make sure repliers in AppendEntries() set the reply term to *their term* (after updating it, if applicable)
 
 5. Make a new method stepDown(), which standardizes the process of stepping down, and is called anywhere the leader/candidate should step down (most notably, in the stale case in sendUpdateTo()).
-  * Rework election outcome system so that stepDown() is the only place where rf.leaderStatus is set to Follower (i.e. all step-downs are routed through this function.)
 
 (Throughout this, be careful with your use of locks. Anywhere you need to change state atomically, lock. But make sure it's not possible for some code to be waiting forever for a lock.)
 

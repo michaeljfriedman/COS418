@@ -253,7 +253,7 @@ func electionTimer() *time.Timer {
 // Returns a timer for duration between two rounds of heartbeats (for leader).
 //
 func leaderHeartbeatTimer() *time.Timer {
-	d := 30
+	d := 40
 	return time.NewTimer(time.Millisecond * time.Duration(d))
 }
 

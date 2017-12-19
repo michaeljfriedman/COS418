@@ -374,7 +374,8 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term > rf.currentTerm {
 		if rf.leaderStatus == Leader {
-			rf.stepDown(Leader)
+			// I am no longer a valid leader. Step down.
+			rf.stepDown()
 		} else if rf.leaderStatus == Candidate {
 			// I'm running in an outdated election. I stop my outdated candidacy
 			rf.electionOutcome <- Stale
@@ -541,10 +542,18 @@ func (rf *Raft) runForLeader() {
 		// Reset who I voted for
 		rf.votedFor = NoOne
 
-		// Process outcome (won, lost, or timeout)
+		// Process outcome (won, lost, stale, or timeout)
+		if outcome == Timeout {
+			// Restart election
+			debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
+
+			go rf.runForLeader()
+			return
+		}
+
+		rf.electionTimer.Stop()
 		if outcome == Won {
 			// I become leader
-			rf.electionTimer.Stop()
 			rf.leaderStatus = Leader
 
 			// Initialize vars I need to keep track of as leader (see section 5.3)
@@ -562,20 +571,13 @@ func (rf *Raft) runForLeader() {
 
 			debugln(ElectionStream, fmt.Sprintf("Term %v: %v has won election and sent notifs to other servers", rf.currentTerm, rf.me))
 		} else if outcome == Lost {
-			// I become follower
-			rf.electionTimer.Stop()
-			rf.leaderStatus = Follower
-
-		} else if outcome == Timeout {
-			// Restart election
-			debugln(ElectionStream, fmt.Sprintf("Term %v: %v timed out election and is restarting", rf.currentTerm, rf.me))
-
-			go rf.runForLeader()
+			// Step down to new leader
+			rf.stepDown()
 
 		} else if outcome == Stale {
-			// I realized I am running in an outdated election. Stop running.
-			rf.electionTimer.Stop()
-			rf.leaderStatus = Follower
+			// I realized I am running in an outdated election. Step down to new
+			// leader.
+			rf.stepDown()
 
 			// The new election may not result in a new leader, but make sure I
 			// start waiting in case I need to start a new election.
@@ -699,12 +701,11 @@ func (rf *Raft) deleteEntriesFrom(index int) {
 }
 
 //
-// Steps down to follower, given the old leader status as either Leader
-// or Candidate.
+// Steps down from leader or candidate to follower.
 //
 // Note: This should be called *while locked*
 //
-func (rf *Raft) stepDown(oldLeaderStatus int) {
+func (rf *Raft) stepDown() {
 	debugln(ConsensusStream, fmt.Sprintf("Term %v: %v is stepping down as leader", rf.currentTerm, rf.me))
 
 	// Drop down to follower
@@ -712,11 +713,6 @@ func (rf *Raft) stepDown(oldLeaderStatus int) {
 
 	// Reset who I voted for
 	rf.votedFor = NoOne
-
-	if oldLeaderStatus == Candidate {
-		// I lost the election. Also mark the outcome as Lost
-		rf.electionOutcome <- Lost
-	}
 }
 
 //
@@ -760,9 +756,14 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// Set term for the reply
 	reply.Term = rf.currentTerm
 
-	// Step down to follower, if necessary
-	if rf.leaderStatus == Leader || rf.leaderStatus == Candidate {
-		rf.stepDown(rf.leaderStatus)
+	// If I'm a leader, step down
+	if rf.leaderStatus == Leader {
+		rf.stepDown()
+	}
+
+	// If I'm a candidate, mark that I've lost the election
+	if rf.leaderStatus == Candidate {
+		rf.electionOutcome <- Lost
 	}
 
 	// Since this may also be the result of an election, reset who I voted for
@@ -941,7 +942,7 @@ func (rf *Raft) sendUpdateTo(server int) {
 
 		if reply.Term > rf.currentTerm {
 			// I am no longer a valid leader. Step down.
-			rf.stepDown(Leader)
+			rf.stepDown()
 			return
 		}
 

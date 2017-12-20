@@ -157,7 +157,7 @@ type Raft struct {
 	numVotes        int
 
 	// Attributes for logging/consensus
-	log           []*LogEntry
+	log           []LogEntry
 	commitIndex   int
 	lastApplied   int
 	nextIndex     []int
@@ -603,7 +603,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int
 	PrevLogTerm  int
 	LeaderCommit int
-	Entries      []*LogEntry
+	Entries      []LogEntry
 
 	// DEBUG
 	// Attributes for help with debugging
@@ -885,7 +885,7 @@ func (rf *Raft) sendUpdateTo(server int) {
 
 		// Send entries from nextIndex to end (or empty if nextIndex is out of range)
 		nextIndex := rf.nextIndex[server]
-		var entries []*LogEntry
+		var entries []LogEntry
 		if nextIndex <= len(rf.log) - 1 {
 			entries = rf.log[nextIndex:]
 		}
@@ -1021,7 +1021,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	// Create new LogEntry and append it
 	newEntryIndex := rf.nextIndex[rf.me]
-	newEntry := &LogEntry{
+	newEntry := LogEntry{
 		command,
 		rf.currentTerm,
 		newEntryIndex,
@@ -1121,7 +1121,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.numVotes = 0
 
 	// Initialize attributes for consensus
-	rf.log = make([]*LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
+	rf.log = make([]LogEntry, 1)  // TODO: Note that there's a dummy value so we can index from 1. Make sure to account for this in the rest of the code.
 	rf.commitIndex = 0
 	rf.lastApplied = 0
 	rf.nextIndex = make([]int, len(peers))

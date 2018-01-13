@@ -51,8 +51,7 @@ type Op struct {
 
 //------------------------------------------------------------------------------
 
-// RaftKV
-
+// RaftKV data type
 type RaftKV struct {
 	mu      sync.Mutex
 	me      int
@@ -70,14 +69,56 @@ type RaftKV struct {
 	appliedChs map[OpId](chan string)
 }
 
+//------------------------------------------------------------------------------
 
+// Get/Put/Append ops
+
+//
+// Starts a Get/Put/Append operation. This will either return false for
+// `success`, along with an err; or it will return true for `success`
+// with no err, and the value received from a Get op.
+//
+// `success` indicates whether this server should reply to the client
+// that the op was successful, or whether the client should retry the op.
+//
+func (kv *RaftKV) doOp(key string, value string, type string, opId OpId)
+(success bool, err Err, value string) {
+	// TODO: Implement doOp()
+}
+
+//
+// Executes a Get operation. Replies to the client with success and the
+// value of the Get once the operation has been applied, or with failure/err
+// if the client should retry on a different server.
+//
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 }
 
+//
+// Executes a Put/Append operation. Analogous to Get, but without returning
+// a value upon success.
+//
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 }
+
+//------------------------------------------------------------------------------
+
+// Applying operations
+
+//
+// Continuously reads from the applyCh for new ops to apply. When an op comes
+// in, applies it, and sends a message to the pending doOp() via the
+// corresponding chan in appliedChs, if there is one. The message will contain
+// either the value, if it's a Get op, or the empty string, if it's a
+// Put/Append.
+//
+func (kv *RaftKV) applyOps() {
+	// TODO: Implement applyOps
+}
+
+//------------------------------------------------------------------------------
 
 //
 // the tester calls Kill() when a RaftKV instance won't
@@ -116,7 +157,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+	kv.appliedChs = make(map[OpId](chan string))
 
+	// Start waiting for applied ops
+	go applyOps()
 
 	return kv
 }

@@ -19,8 +19,9 @@ type PutAppendArgs struct {
 }
 
 type PutAppendReply struct {
-	WrongLeader bool
-	Err         Err
+	//WrongLeader bool // NOTE: "Renamed" to describe more general outcome
+	Success bool
+	Err     Err
 }
 
 type GetArgs struct {
@@ -29,7 +30,8 @@ type GetArgs struct {
 }
 
 type GetReply struct {
-	WrongLeader bool
-	Err         Err
-	Value       string
+	//WrongLeader bool // NOTE: "Renamed" to describe more general outcome
+	Success bool
+	Err     Err
+	Value   string
 }

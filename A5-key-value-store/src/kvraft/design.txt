@@ -52,7 +52,7 @@ Apply Ops -------------------------------------------->
   - If I have an op handler pending for this op ID,
     send "success" to it
 
-Do Op ------------------------------------------------>
+Do Op (multiple occurrences) ------------------------->
 - Call Start() on raft if op ID is not in the log.
   Reply to client with failure if I'm not leader.
 - (At this point, op ID must be in the log)

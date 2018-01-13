@@ -17,12 +17,41 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+//------------------------------------------------------------------------------
 
+// Ops
+
+// Constants for Op types
+const (
+	Get    = "Get"
+	Put    = "Put"
+	Append = "Append"
+)
+
+//
+// Unique IDs for Ops. 2-tuple (Client ID, Client Op ID)
+//
+type OpId struct {
+	ClientId   int
+	ClientOpId int
+}
+
+//
+// An Op represents a Get, Put, or Append operation
+//
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Key   string
+	Value string
+	Type  string  // Get, Put, or Append
+	Id    OpId
 }
+
+//------------------------------------------------------------------------------
+
+// RaftKV
 
 type RaftKV struct {
 	mu      sync.Mutex
@@ -33,6 +62,12 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+
+	// For each unique op requested by a client, this server will add a mapping
+	// here. When a value is received on the channel, indicates that this
+	// server should reply to the client with success (i.e. op was applied).
+	// The value on the channel is the value for a Get, or empty for Put/Append.
+	appliedChs map[OpId](chan string)
 }
 
 

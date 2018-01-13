@@ -1,0 +1,63 @@
+Assignment 5 Key-Value Store - Design
+=====================================
+
+Data types
+----------
+
+Op
+- Key
+- Value
+- Type (Get/Put/Append)
+- Id (client ID, op ID for that client)
+
+RaftKV
+- Add appliedChs, map: op ID -> bool chan (indicates
+  if op was applied and I should send success reply
+  to client)
+
+
+
+Functions
+---------
+
+doOp()
+- (See Goroutines - Do Op)
+
+
+Get()
+- Call doOp(Get)
+
+
+Put()
+- Call doOp(Put)
+
+
+Append()
+- Call doOp(Append)
+
+
+applyOps()
+- (See Goroutines - Apply Ops)
+
+
+
+Goroutines
+----------
+
+Apply Ops -------------------------------------------->
+- Loop:
+  - Read from applyCh
+  - Lock until end of loop
+  - Apply op
+  - If I have an op handler pending for this op ID,
+    send "success" to it
+
+Do Op ------------------------------------------------>
+- Call Start() on raft if op ID is not in the log.
+  Reply to client with failure if I'm not leader.
+- (At this point, op ID must be in the log)
+- Wait for reslut from Apply Ops, or timeout after 1s
+  (ref: Piazza @254)
+- If go a reply from Apply Ops, reply to client with
+  success (and value, for a Get)
+- Else reply to client with failure

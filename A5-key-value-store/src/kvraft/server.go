@@ -62,6 +62,9 @@ type RaftKV struct {
 
 	// Your definitions here.
 
+	// This server's key-value mapping
+	kvMap map[string]string
+
 	// For each unique op requested by a client, this server will add a mapping
 	// here. When a value is received on the channel, indicates that this
 	// server should reply to the client with success (i.e. op was applied).
@@ -76,14 +79,16 @@ type RaftKV struct {
 //
 // Starts a Get/Put/Append operation. This will either return false for
 // `success`, along with an err; or it will return true for `success`
-// with no err, and the value received from a Get op.
+// with no err, and the value received from a Get op `getValue`.
 //
 // `success` indicates whether this server should reply to the client
 // that the op was successful, or whether the client should retry the op.
 //
-func (kv *RaftKV) doOp(key string, value string, type string, opId OpId)
-(success bool, err Err, value string) {
+// (In case it's not clear, the param `t` is the type Get/Put/Append.
+// Can't use the word "type" since this is a keyword in Go.)
+func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (success bool, err Err, getValue string) {
 	// TODO: Implement doOp()
+	return false, "", ""
 }
 
 //
@@ -115,7 +120,35 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // Put/Append.
 //
 func (kv *RaftKV) applyOps() {
-	// TODO: Implement applyOps
+	for {
+		// Read next applied op
+		applyMsg := <-kv.applyCh
+		op := applyMsg.Command.(Op)
+
+		// Apply op while locked
+		go func() {
+			kv.mu.Lock()
+			defer kv.mu.Unlock()
+
+			// Apply op
+			var value string
+			switch op.Type {
+			case Get:
+				value = kv.kvMap[op.Key]
+			case Put:
+				kv.kvMap[op.Key] = op.Value
+			case Append:
+				kv.kvMap[op.Key] += op.Value
+			}
+
+			// Send message to the corresponding pending doOp(), if there
+			// is one on this server for this op
+			ch, ok := kv.appliedChs[op.Id]
+			if ok {
+				ch <- value
+			}
+		}()
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -160,7 +193,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.appliedChs = make(map[OpId](chan string))
 
 	// Start waiting for applied ops
-	go applyOps()
+	go kv.applyOps()
 
 	return kv
 }

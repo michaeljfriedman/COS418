@@ -26,14 +26,17 @@ doOp()
 
 Get()
 - Call doOp(Get)
+- Reply to client with result from doOp()
 
 
 Put()
 - Call doOp(Put)
+- Reply to client with result from doOp()
 
 
 Append()
 - Call doOp(Append)
+- Reply to client with result from doOp()
 
 
 applyOps()

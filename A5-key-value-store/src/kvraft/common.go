@@ -1,5 +1,6 @@
 package raftkv
 
+// Constants for errors
 const (
 	OK       = "OK"
 	ErrNoKey = "ErrNoKey"
@@ -7,12 +8,26 @@ const (
 
 type Err string
 
+// Constants for Op types
+const (
+	Get    = "Get"
+	Put    = "Put"
+	Append = "Append"
+)
+
+// Unique IDs for Ops. 2-tuple (Client ID, Client Op ID)
+type OpId struct {
+	ClientId   int
+	ClientOpId int
+}
+
 // Put or Append
 type PutAppendArgs struct {
 	// You'll have to add definitions here.
 	Key   string
 	Value string
 	Op    string // "Put" or "Append"
+	OpId  OpId
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
@@ -25,7 +40,8 @@ type PutAppendReply struct {
 }
 
 type GetArgs struct {
-	Key string
+	Key  string
+	OpId OpId
 	// You'll have to add definitions here.
 }
 

@@ -21,21 +21,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 
 // Ops
 
-// Constants for Op types
-const (
-	Get    = "Get"
-	Put    = "Put"
-	Append = "Append"
-)
-
-//
-// Unique IDs for Ops. 2-tuple (Client ID, Client Op ID)
-//
-type OpId struct {
-	ClientId   int
-	ClientOpId int
-}
-
 //
 // An Op represents a Get, Put, or Append operation
 //
@@ -97,7 +82,13 @@ func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (succes
 // if the client should retry on a different server.
 //
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Your code here.
+	// Do op
+	success, err, getValue := kv.doOp(args.Key, "", Get, args.OpId)
+
+	// Reply to client
+	reply.Success = success
+	reply.Err = err
+	reply.Value = getValue
 }
 
 //
@@ -105,7 +96,12 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 // a value upon success.
 //
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
+	// Do op
+	success, err, _ := kv.doOp(args.Key, args.Value, args.Op, args.OpId)
+
+	// Reply to client
+	reply.Success = success
+	reply.Err = err
 }
 
 //------------------------------------------------------------------------------

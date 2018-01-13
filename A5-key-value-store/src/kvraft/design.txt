@@ -59,7 +59,7 @@ Do Op (multiple occurrences) ------------------------->
 - Call Start() on raft if op ID is not in the log.
   Reply to client with failure if I'm not leader.
 - (At this point, op ID must be in the log)
-- Wait for reslut from Apply Ops, or timeout after 1s
+- Wait for result from Apply Ops, or timeout after 1s
   (ref: Piazza @254)
 - If go a reply from Apply Ops, reply to client with
   success (and value, for a Get)

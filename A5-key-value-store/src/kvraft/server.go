@@ -6,7 +6,12 @@ import (
 	"log"
 	"raft"
 	"sync"
+	"time"
 )
+
+//------------------------------------------------------------------------------
+
+// Debugging tools
 
 const Debug = 0
 
@@ -61,19 +66,78 @@ type RaftKV struct {
 
 // Get/Put/Append ops
 
+// Timeout for an operation to commit/be applied, in milliseconds.
+const OpTimeout = 1000
+
+//
+// Checks if an op is in this server's raft log. Returns boolean indicating
+// whether it is.
+//
+// **Must be called while locked. Assumes the caller has locked before
+// calling.**
+//
+func (kv *RaftKV) isInLog(opId OpId) bool {
+	// TODO: Implement isInLog()
+	return false
+}
+
 //
 // Starts a Get/Put/Append operation. This will either return false for
-// `success`, along with an err; or it will return true for `success`
-// with no err, and the value received from a Get op `getValue`.
+// `success`, along with an err; or it will return true for `success` with
+// OK for err, and the value received from a Get op `value` (if not a Get
+// op, `value` will be empty).
 //
 // `success` indicates whether this server should reply to the client
 // that the op was successful, or whether the client should retry the op.
 //
 // (In case it's not clear, the param `t` is the type Get/Put/Append.
 // Can't use the word "type" since this is a keyword in Go.)
-func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (success bool, err Err, getValue string) {
-	// TODO: Implement doOp()
-	return false, "", ""
+func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (success bool, err Err, value string) {
+	// First, check if this op is a retry of an old op. Do not call
+	// Start() for a duplicate op.
+	go func() {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
+
+		if !kv.isInLog(opId) {
+			// Make a new op
+			op := Op{key, putValue, t, opId}
+			_, _, isLeader := kv.rf.Start(op)
+
+			// Can't proceed if I'm not the leader
+			if !isLeader {
+				success = false
+				err = ErrWrongLeader
+				value = ""
+				return
+			}
+		}
+
+		// Set up channel with applyOps() for a result from this op
+		ch := make(chan string, 1)
+		kv.appliedChs[opId] = ch
+	}()
+
+	// Wait for result from applyOps(), or time out
+	timer := time.NewTimer(time.Millisecond * time.Duration(OpTimeout))
+	select {
+	case value = <-kv.appliedChs[opId]:
+		// Op was successfully applied
+		success = true
+		err = OK
+	case <-timer.C:
+		// Timed out
+		success = false
+		err = ErrTimeout
+		value = ""
+	}
+
+	// Clear entry for this channel
+	kv.mu.Lock()
+	delete(kv.appliedChs, opId)
+	kv.mu.Unlock()
+
+	return
 }
 
 //
@@ -83,12 +147,12 @@ func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (succes
 //
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Do op
-	success, err, getValue := kv.doOp(args.Key, "", Get, args.OpId)
+	success, err, value := kv.doOp(args.Key, "", Get, args.OpId)
 
 	// Reply to client
 	reply.Success = success
 	reply.Err = err
-	reply.Value = getValue
+	reply.Value = value
 }
 
 //

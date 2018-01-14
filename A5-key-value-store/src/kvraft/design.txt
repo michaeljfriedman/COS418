@@ -54,6 +54,7 @@ Apply Ops -------------------------------------------->
   - Apply op
   - If I have an op handler pending for this op ID,
     send "success" to it
+  - Else, put op on back log
 
 Do Op (multiple occurrences) ------------------------->
 - Call Start() on raft if op ID is not in the log.
@@ -64,3 +65,6 @@ Do Op (multiple occurrences) ------------------------->
 - If go a reply from Apply Ops, reply to client with
   success (and value, for a Get)
 - Else reply to client with failure
+
+- NOTE: In every reply, also piggy back all back-logged applied ops for that
+  client, and remove them from the back log.

@@ -2,6 +2,7 @@ package raftkv
 
 import (
 	"encoding/gob"
+	"fmt"
 	"labrpc"
 	"log"
 	"raft"
@@ -13,7 +14,7 @@ import (
 
 // Debugging tools
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -39,6 +40,21 @@ type Op struct {
 	Id    OpId
 }
 
+//
+// Returns a string form for an op. Has the format:
+//   (1, 1): Put("key1", "value1")
+//     ^id
+//
+func (op Op) toString() string {
+	if op.Type == Get {
+		return fmt.Sprintf("(%v, %v): %v(%v)", op.Id.ClientId, op.Id.ClientOpId,
+			op.Type, op.Key)
+	} else {
+		return fmt.Sprintf("(%v, %v): %v(%v, %v)", op.Id.ClientId, op.Id.ClientOpId,
+			op.Type, op.Key, op.Value)
+	}
+}
+
 //------------------------------------------------------------------------------
 
 // RaftKV data type
@@ -56,7 +72,7 @@ type RaftKV struct {
 	kvMap map[string]string
 
 	// For each unique op requested by a client, this server will add a mapping
-	// here. When a value is received on the channel, indicates that this
+	// here. When a value is received on the channel, it indicates that this
 	// server should reply to the client with success (i.e. op was applied).
 	// The value on the channel is the value for a Get, or empty for Put/Append.
 	appliedChs map[OpId](chan string)
@@ -70,14 +86,14 @@ type RaftKV struct {
 const OpTimeout = 1000
 
 //
-// Checks if an op is in this server's raft log. Returns boolean indicating
-// whether it is.
+// Checks if an op is already pending in the raft system, by its opId.
+// Returns boolean indicating whether it is.
 //
 // **Must be called while locked. Assumes the caller has locked before
 // calling.**
 //
-func (kv *RaftKV) isInLog(opId OpId) bool {
-	// TODO: Implement isInLog()
+func (kv *RaftKV) isDuplicate(opId OpId) bool {
+	// TODO: Implement isDuplicate()
 	return false
 }
 
@@ -93,15 +109,18 @@ func (kv *RaftKV) isInLog(opId OpId) bool {
 // (In case it's not clear, the param `t` is the type Get/Put/Append.
 // Can't use the word "type" since this is a keyword in Go.)
 func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (success bool, err Err, value string) {
+	// Make a new op
+	op := Op{key, putValue, t, opId}
+	DPrintf("%v got op %v\n", kv.me, op.toString())
+
 	// First, check if this op is a retry of an old op. Do not call
 	// Start() for a duplicate op.
 	go func() {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
 
-		if !kv.isInLog(opId) {
-			// Make a new op
-			op := Op{key, putValue, t, opId}
+		if !kv.isDuplicate(opId) {
+			// Send this op to raft for consensus
 			_, _, isLeader := kv.rf.Start(op)
 
 			// Can't proceed if I'm not the leader
@@ -109,6 +128,8 @@ func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (succes
 				success = false
 				err = ErrWrongLeader
 				value = ""
+
+				DPrintf("%v not proceeding op %v. Not leader\n", kv.me, op.toString())
 				return
 			}
 		}
@@ -120,16 +141,19 @@ func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (succes
 
 	// Wait for result from applyOps(), or time out
 	timer := time.NewTimer(time.Millisecond * time.Duration(OpTimeout))
+	DPrintf("%v started op %v. Waiting for completion...\n", kv.me, op.toString())
 	select {
 	case value = <-kv.appliedChs[opId]:
 		// Op was successfully applied
 		success = true
 		err = OK
+		DPrintf("%v is done with op %v\n", kv.me, op.toString())
 	case <-timer.C:
 		// Timed out
 		success = false
 		err = ErrTimeout
 		value = ""
+		DPrintf("%v timed out op %v. Client must retry\n", kv.me, op.toString())
 	}
 
 	// Clear entry for this channel
@@ -185,6 +209,8 @@ func (kv *RaftKV) applyOps() {
 		applyMsg := <-kv.applyCh
 		op := applyMsg.Command.(Op)
 
+		DPrintf("%v got consensus for op %v\n. Applying...", kv.me, op.toString())
+
 		// Apply op while locked
 		go func() {
 			kv.mu.Lock()
@@ -207,6 +233,8 @@ func (kv *RaftKV) applyOps() {
 			if ok {
 				ch <- value
 			}
+
+			DPrintf("%v applied op %v\n", kv.me, op.toString())
 		}()
 	}
 }
@@ -221,7 +249,7 @@ func (kv *RaftKV) applyOps() {
 //
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
-	// Your code here, if desired.
+	DPrintf("%v shut down\n", kv.me)
 }
 
 //
@@ -254,6 +282,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// Start waiting for applied ops
 	go kv.applyOps()
+
+	DPrintf("%v booted up\n", me)
 
 	return kv
 }

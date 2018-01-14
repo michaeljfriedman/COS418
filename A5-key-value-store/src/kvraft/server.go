@@ -76,6 +76,12 @@ type RaftKV struct {
 	// server should reply to the client with success (i.e. op was applied).
 	// The value on the channel is the value for a Get, or empty for Put/Append.
 	appliedChs map[OpId](chan string)
+
+	// ... However, if an op is applied *after* its corresponding handleOp() times
+	// out (i.e. after a "failure" reply has already gone back to the client),
+	// the op is instead placed on this back log, and the server sends "success"
+	// for all back-logged ops in its next reply to the client.
+	appliedBackLog map[OpId]string
 }
 
 //------------------------------------------------------------------------------
@@ -108,7 +114,16 @@ func (kv *RaftKV) isDuplicate(opId OpId) bool {
 //
 // (In case it's not clear, the param `t` is the type Get/Put/Append.
 // Can't use the word "type" since this is a keyword in Go.)
-func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (success bool, err Err, value string) {
+func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ackedOps []OpId) (success bool, err Err, value string) {
+	// Clear "stale" ops from the back log (i.e. those the client says it got
+	// "success" replies for
+	kv.removeFromBackLog(ackedOps)
+	DPrintf("%v removed ops from back log: %v\n", kv.me, ackedOps)
+
+	//---------------
+
+	// Do the op
+
 	// Make a new op
 	op := Op{key, putValue, t, opId}
 	DPrintf("%v got op %v\n", kv.me, op.toString())
@@ -165,18 +180,47 @@ func (kv *RaftKV) doOp(key string, putValue string, t string, opId OpId) (succes
 }
 
 //
+// Returns the subset of the back log with ops from the given clientId.
+//
+func (kv *RaftKV) getBackLog(clientId int) map[OpId]string {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	subset := make(map[OpId]string)
+	for opId, value := range kv.appliedBackLog {
+		if opId.ClientId == clientId {
+			subset[opId] = value
+		}
+	}
+	return subset
+}
+
+//
+// Removes the given entries from the back log.
+//
+func (kv *RaftKV) removeFromBackLog(opIds []OpId) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	for _, opId := range opIds {
+		delete(kv.appliedBackLog, opId)
+	}
+}
+
+//
 // Executes a Get operation. Replies to the client with success and the
 // value of the Get once the operation has been applied, or with failure/err
 // if the client should retry on a different server.
 //
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
-	// Do op
-	success, err, value := kv.doOp(args.Key, "", Get, args.OpId)
+	// Handle op
+	success, err, value := kv.handleOp(args.Key, "", Get, args.OpId, args.AckedOps)
 
 	// Reply to client
 	reply.Success = success
 	reply.Err = err
 	reply.Value = value
+	reply.AppliedOps = kv.getBackLog(args.OpId.ClientId)
 }
 
 //
@@ -184,12 +228,13 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 // a value upon success.
 //
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Do op
-	success, err, _ := kv.doOp(args.Key, args.Value, args.Op, args.OpId)
+	// Handle op
+	success, err, _ := kv.handleOp(args.Key, args.Value, args.Op, args.OpId, args.AckedOps)
 
 	// Reply to client
 	reply.Success = success
 	reply.Err = err
+	reply.AppliedOps = kv.getBackLog(args.OpId.ClientId)
 }
 
 //------------------------------------------------------------------------------
@@ -198,10 +243,12 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 //
 // Continuously reads from the applyCh for new ops to apply. When an op comes
-// in, applies it, and sends a message to the pending doOp() via the
-// corresponding chan in appliedChs, if there is one. The message will contain
-// either the value, if it's a Get op, or the empty string, if it's a
-// Put/Append.
+// in, applies it, and sends the op's result to the pending handleOp() via the
+// corresponding chan in appliedChs, if there is one. If there isn't, adds
+// the op to the back log.
+//
+// The result will contain either the value, if it's a Get op, or the empty
+// string, if it's a Put/Append.
 //
 func (kv *RaftKV) applyOps() {
 	for {
@@ -227,14 +274,19 @@ func (kv *RaftKV) applyOps() {
 				kv.kvMap[op.Key] += op.Value
 			}
 
-			// Send message to the corresponding pending doOp(), if there
-			// is one on this server for this op
+			DPrintf("%v applied op %v\n", kv.me, op.toString())
+
+			// Send result to the corresponding pending handleOp(), if there
+			// is one for this op
 			ch, ok := kv.appliedChs[op.Id]
 			if ok {
 				ch <- value
+				DPrintf("%v sent result of op %v back to handleOp()\n", kv.me, op.toString())
+			} else {
+				// No pending handleOp(). Add this op to back log instead
+				kv.appliedBackLog[op.Id] = value
+				DPrintf("%v added result of op %v to back log\n", kv.me, op.toString())
 			}
-
-			DPrintf("%v applied op %v\n", kv.me, op.toString())
 		}()
 	}
 }
@@ -279,6 +331,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 	kv.appliedChs = make(map[OpId](chan string))
+	kv.appliedBackLog = make(map[OpId]string)
 
 	// Start waiting for applied ops
 	go kv.applyOps()

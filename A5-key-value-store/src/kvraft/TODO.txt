@@ -20,13 +20,14 @@ Sat 1/13:
   the client to retry. Other servers will deny it because they're not the
   leader. So the client will retry forever.
   - **Solution**
-    - Server: Add a queue "applied back log", which keeps track of ops
-    applied but not yet replied to the client.
-      - When an op is applied, it is added to the back log if there isn't
+    * Server:
+      * Add a queue "applied back log", which keeps track of ops applied but
+        not yet replied to the client.
+      * When an op is applied, it is added to the back log if there isn't
         currently a outstanding appliedCh for it.
-      - Replying the back log: Whenever the server replies to a client, it
+      * Replying the back log: Whenever the server replies to a client, it
         piggy-backs all ops in the back log as well as "successful".
-      - Clearing the stale back log: Whenever a server receives an op from a
+      * Clearing the stale back log: Whenever a server receives an op from a
         client, also clear out all ops in the back log for which the client
         says it heard successful replies (see below).
     - Client: Maintain a list of ops you heard successful replies for. When a

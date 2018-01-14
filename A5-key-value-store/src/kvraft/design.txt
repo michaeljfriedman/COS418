@@ -17,31 +17,39 @@ RaftKV
 
 
 
-Functions
----------
+Primary functions
+-----------------
 
-doOp()
+handleOp()
 - (See Goroutines - Do Op)
 
 
 Get()
-- Call doOp(Get)
-- Reply to client with result from doOp()
+- Call handleOp(Get)
+- Reply to client with result from handleOp()
 
 
 Put()
-- Call doOp(Put)
-- Reply to client with result from doOp()
+- Call handleOp(Put)
+- Reply to client with result from handleOp()
 
 
 Append()
-- Call doOp(Append)
-- Reply to client with result from doOp()
+- Call handleOp(Append)
+- Reply to client with result from handleOp()
 
 
 applyOps()
 - (See Goroutines - Apply Ops)
 
+
+Other functions
+---------------
+
+- isDuplicate(): Checks whether an opId has already been Start()'ed/applied
+- getBackLog(): Returns subset of appliedBackLog that pertains to a particular
+  client.
+- removeFromBackLog(): Removes a set of op IDs from the back log.
 
 
 Goroutines

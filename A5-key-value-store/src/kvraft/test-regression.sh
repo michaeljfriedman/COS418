@@ -10,6 +10,7 @@ tests=(
   TestBasic
   TestConcurrent
   TestUnreliable
+  TestUnreliableOneKey
 )
 
 #----------------------------

@@ -131,7 +131,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 	// First, check if this op is a retry of an old op. Do not call
 	// Start() for a duplicate op. Return value indicates whether or not
 	// to keep going after this locked section finishes.
-	proceed := go func() bool {
+	proceed := func() bool {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
 
@@ -260,7 +260,7 @@ func (kv *RaftKV) applyOps() {
 		DPrintf("%v got consensus for op %v\n. Applying...", kv.me, op.toString())
 
 		// Apply op while locked
-		go func() {
+		func() {
 			kv.mu.Lock()
 			defer kv.mu.Unlock()
 

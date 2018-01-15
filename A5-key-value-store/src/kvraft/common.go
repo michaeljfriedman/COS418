@@ -19,7 +19,7 @@ const (
 
 // Unique IDs for Ops. 2-tuple (Client ID, Client Op ID)
 type OpId struct {
-	ClientId   int
+	ClientId   int64
 	ClientOpId int
 }
 

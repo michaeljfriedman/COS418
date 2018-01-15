@@ -4,12 +4,22 @@ import "labrpc"
 import "crypto/rand"
 import "math/big"
 
+//-----------------------------------------------------------------------------
+
+// Clerk definition/initialization
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
-	// You will have to modify this struct.
+
+	id            int64  // my client id
+	currentOpId   int    // value to be used as OpId.ClientOpId
+	completedOps  []OpId
+	currentLeader int    // index into servers
 }
 
+//
+// Returns a random 64-bit integer
+//
 func nrand() int64 {
 	max := big.NewInt(int64(1) << 62)
 	bigx, _ := rand.Int(rand.Reader, max)
@@ -17,48 +27,67 @@ func nrand() int64 {
 	return x
 }
 
+//
+// Returns a new Clerk, given the array of servers it
+// can communicate with to execute operations.
+//
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
-	// You'll have to add code here.
+
+	// Generate a random ID for this clerk
+	ck.id = nrand()
+
+	// Initialize other clerk fields
+	ck.currentOpId = 0
+	ck.completedOps = make([]OpId, 0)
+	ck.currentLeader = 0
+
 	return ck
 }
 
+//-----------------------------------------------------------------------------
+
+// Ops
+
 //
-// fetch the current value for a key.
-// returns "" if the key does not exist.
-// keeps trying forever in the face of all other errors.
+// Makes a request to the servers to execute the op of type t (Get, Put, or
+// Append), given the key and, for Put/Append, the value (use the empty string
+// as the value for a Get). For a Get, returns the value, or empty string if
+// the key doesn't exist. For Put/Append, returns the empty string for.
 //
-// you can send an RPC with code like this:
+// You can send an RPC with code like this:
 // ok := ck.servers[i].Call("RaftKV.Get", &args, &reply)
 //
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
+// Remember that the types of args and reply (including whether they are
+// pointers) must match the declared types of the RPC handler function's
+// arguments. And reply must be passed as a pointer.
 //
-func (ck *Clerk) Get(key string) string {
-
-	// You will have to modify this function.
+func (ck *Clerk) handleOp(key string, value string, t string) string {
+	// TODO: Implement handleOp()
 	return ""
 }
 
+
 //
-// shared by Put and Append.
+// Fetches and returns the current value for a key, or returns "" if the
+// key does not exist.
 //
-// you can send an RPC with code like this:
-// ok := ck.servers[i].Call("RaftKV.PutAppend", &args, &reply)
-//
-// the types of args and reply (including whether they are pointers)
-// must match the declared types of the RPC handler function's
-// arguments. and reply must be passed as a pointer.
-//
-func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+func (ck *Clerk) Get(key string) string {
+	return ck.handleOp(key, "", Get)
 }
 
+
+//
+// Inserts a key-value pair.
+//
 func (ck *Clerk) Put(key string, value string) {
-	ck.PutAppend(key, value, Put)
+	ck.handleOp(key, value, Put)
 }
+
+//
+// Appends `value` to the current value for `key`.
+//
 func (ck *Clerk) Append(key string, value string) {
-	ck.PutAppend(key, value, Append)
+	ck.handleOp(key, value, Append)
 }

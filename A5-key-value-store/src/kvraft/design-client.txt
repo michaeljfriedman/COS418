@@ -1,0 +1,53 @@
+Assignment 5 Key-Value Store - Client Design
+============================================
+
+Data types
+----------
+
+Clerk
+- Servers
+- Clerk ID
+- Current op ID
+- List of completed ops
+- Current leader
+
+
+Primary functions
+-----------------
+
+handleOp()
+- (See goroutines - Handle Op)
+
+Get()
+- Call handleOp(Get)
+- Return value you get back
+
+Put()
+- Call handleOp(Put)
+- Return value you get back
+
+Append()
+- Call handleOp(Append)
+- Return value you get back
+
+
+
+Other functions
+---------------
+
+- nrand(): Returns a random 64-bit integer. Used to generate a
+  (probabilistically) unique client ID.
+
+
+Goroutines
+----------
+
+Handle Op (multiple) ------------------------------------>
+- Loop:
+  - Locked:
+    - Construct next op
+  - Make request to current leader
+  - If successful, break
+  - If not, inc current leader
+- Add op to completed ops
+- Return value (if Get)

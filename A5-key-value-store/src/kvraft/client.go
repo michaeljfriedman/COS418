@@ -64,8 +64,59 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. And reply must be passed as a pointer.
 //
 func (ck *Clerk) handleOp(key string, value string, t string) string {
-	// TODO: Implement handleOp()
-	return ""
+	// Construct next op ID
+	opId := OpId{ck.id, ck.currentOpId}
+	ck.currentOpId++
+
+	// Keep retrying op until we get a successful response
+	var replyValue string
+	for {
+		// Make a request for this op to the current leader
+		var ok bool
+		var success bool
+		if t == Get {
+			args := GetArgs{
+				key,
+				opId,
+				ck.completedOps,
+			}
+
+			reply := GetReply{}
+
+			ok = ck.servers[ck.currentLeader].Call("RaftKV.Get", &args, &reply)
+			success = reply.Success
+			replyValue = reply.Value
+
+		} else if t == Put || t == Append {
+			args := PutAppendArgs{
+				key,
+				value,
+				t,
+				opId,
+				ck.completedOps,
+			}
+
+			reply := PutAppendReply{}
+
+			ok = ck.servers[ck.currentLeader].Call("RaftKV.PutAppend", &args, &reply)
+			success = reply.Success
+			replyValue = ""
+		}
+
+		// Check if reply was successful
+		if ok && success {
+			// Op is done!
+			break
+		} else {
+			// Op was unsuccessful. Retry on the next server
+			ck.currentLeader++
+		}
+	}
+
+	// Add op to completed ops
+	ck.completedOps = append(ck.completedOps, opId)
+
+	return replyValue
 }
 
 

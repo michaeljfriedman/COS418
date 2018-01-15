@@ -33,9 +33,8 @@ type PutAppendArgs struct {
 
 	// Piggy-backed data about other ops
 
-	// List of ops that this client is "ack-ing" (i.e. client has received
-	// "success" reply for these ops)
-	AckedOps []OpId
+	// List of ops that this client has received "success" reply for
+	CompletedOps []OpId
 }
 
 type PutAppendReply struct {
@@ -51,9 +50,8 @@ type GetArgs struct {
 
 	// Piggy-backed data about other ops
 
-	// List of ops that this client is "ack-ing" (i.e. client has received
-	// "success" reply for these ops)
-	AckedOps []OpId
+	// List of ops that this client has received "success" reply for
+	CompletedOps []OpId
 }
 
 type GetReply struct {

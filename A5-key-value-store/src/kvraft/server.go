@@ -217,7 +217,7 @@ func (kv *RaftKV) removeFromBackLog(opIds []OpId) {
 //
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Handle op
-	success, err, value := kv.handleOp(args.Key, "", Get, args.OpId, args.AckedOps)
+	success, err, value := kv.handleOp(args.Key, "", Get, args.OpId, args.CompletedOps)
 
 	// Reply to client
 	reply.Success = success
@@ -231,7 +231,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 //
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Handle op
-	success, err, _ := kv.handleOp(args.Key, args.Value, args.Op, args.OpId, args.AckedOps)
+	success, err, _ := kv.handleOp(args.Key, args.Value, args.Op, args.OpId, args.CompletedOps)
 
 	// Reply to client
 	reply.Success = success

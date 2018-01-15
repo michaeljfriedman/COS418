@@ -37,12 +37,15 @@ Sat 1/13:
 
 
 Sun 1/14:
-- Write client     <------------------------------------------ YOU ARE HERE
-  - Design
-  - Implement
+- Write client
+  * Design
+  * Implement
+  - Add debug statements       <-------------------------- YOU ARE HERE
 
 - Test up to here
 
+
+Mon 1/15:
 - How to detect duplicates without checking the log? - (put this off until part II)
   - **Solution**. In server:
     - Allow duplicate entries to be Start()'ed, but don't *apply* them more

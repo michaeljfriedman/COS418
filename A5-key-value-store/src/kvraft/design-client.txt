@@ -44,8 +44,7 @@ Goroutines
 
 Handle Op (multiple) ------------------------------------>
 - Loop:
-  - Locked:
-    - Construct next op
+  - Construct next op
   - Make request to current leader
   - If successful, break
   - If not, inc current leader

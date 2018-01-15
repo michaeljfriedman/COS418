@@ -68,6 +68,11 @@ type RaftKV struct {
 	// the op is instead placed on this back log, and the server sends "success"
 	// for all back-logged ops in its next reply to the client.
 	appliedBackLog map[OpId]string
+
+	// Indicates whether an op has been started in Raft. (Just the existence of
+	// an entry in this map indicates it has been started. If it has not, or if
+	// it has been acknowledged as completed by the client, there is no entry.)
+	isStarted map[OpId]bool
 }
 
 //------------------------------------------------------------------------------
@@ -77,16 +82,23 @@ type RaftKV struct {
 // Timeout for an operation to commit/be applied, in milliseconds.
 const OpTimeout = 1000
 
+
 //
-// Checks if an op is already pending in the raft system, by its opId.
-// Returns boolean indicating whether it is.
+// Clears up state maintained about ops that the client has acknolwedged are
+// completed: back log and isStarted map.
 //
-// **Must be called while locked. Assumes the caller has locked before
-// calling.**
-//
-func (kv *RaftKV) isDuplicate(opId OpId) bool {
-	// TODO: Implement isDuplicate()
-	return false
+func (kv *RaftKV) freeMemForCompletedOps(completedOps []OpId) {
+	DPrintf(LockStream, "Server %v is grabbing lock 3\n", kv.me)
+	kv.mu.Lock()
+	defer func() {
+		DPrintf(LockStream, "Server %v is releasing lock 3\n", kv.me)
+		kv.mu.Unlock()
+	}()
+
+	for _, opId := range completedOps {
+		delete(kv.appliedBackLog, opId)
+		delete(kv.isStarted, opId)
+	}
 }
 
 //
@@ -104,41 +116,27 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 	op := Op{key, putValue, t, opId}
 	DPrintf(DefaultStream, "Server %v got op %v\n", kv.me, op.toString())
 
-	// Clear "stale" ops from the back log (i.e. those the client says it got
-	// "success" replies for
-	kv.removeFromBackLog(completedOps)
-	DPrintf(DefaultStream, "Server %v removed ops from back log: %v\n", kv.me, completedOps)
+	// Clear state about "stale" ops (i.e. those the client acknowledges
+	// are completed)
+	kv.freeMemForCompletedOps(completedOps)
+	DPrintf(DefaultStream, "Server %v cleared state about completed ops: %v\n", kv.me, completedOps)
 
 	//---------------
 
 	// Do the op
 
-	// Send this op to raft for consensus, and make sure that I am the leader.
-	// Do not proceed if I'm not.
-	// TODO: This potentially means I can get ops applied even if I'm not leader, thus duplicating ops. But this will be addressed later.
-	_, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
-		success = false
-		err = ErrWrongLeader
-		value = ""
-
-		DPrintf(DefaultStream, "Server %v not proceeding op %v. Not leader\n", kv.me, op.toString())
-		return
-	}
-
-	// While locked, process the op using either the back log, or by setting up a
-	// channel to applyOps(). Return value indicates whether or not to keep going
-	// after this locked section finishes, and if keep going, the appliedCh to
-	// expect the result of the op on.
-	proceed, appliedCh := func() (bool, chan string)  {
-		DPrintf(LockStream, "Server %v is grabbing lock 1\n", kv.me)
+	// First, check some conditions before starting a new op in Raft. Must be
+	// locked for safety. `proceed` indicates whether or not to proceed after
+	// this locked section finishes.
+	DPrintf(LockStream, "Server %v is grabbing lock 5\n", kv.me)
+	proceed := func() bool {
 		kv.mu.Lock()
 		defer func() {
-			DPrintf(LockStream, "Server %v is releasing lock 1\n", kv.me)
+			DPrintf(LockStream, "Server %v is releasing lock 5\n", kv.me)
 			kv.mu.Unlock()
 		}()
 
-		// Check if result of the op is in the back log first
+		// First, check if result of op is in the back log
 		backLogValue, ok := kv.appliedBackLog[opId]
 		if ok {
 			// Result is in back log. Return it
@@ -147,19 +145,59 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 			value = backLogValue
 
 			DPrintf(DefaultStream, "Server %v got op %v from back log. Returning result\n", kv.me, op.toString())
-			return false, nil
+			return false
 		}
 
-		// Set up channel with applyOps() for a result from this op
-		ch := make(chan string, 1)
-		kv.appliedChs[opId] = ch
+		// Check if op has already been started
+		_, ok = kv.isStarted[opId]
+		if ok {
+			// Op has already been started. Tell client to retry for result in a bit.
+			success = false
+			err = ErrStartedAlready
+			value = ""
 
-		return true, ch
+			DPrintf(DefaultStream, "Server %v already started op %v. Not proceeding\n", kv.me, op.toString())
+			return false
+		}
+
+		return true
 	}()
 
 	if !proceed {
 		return
 	}
+
+	// Op not started yet. Try to start this op in Raft, making sure that I am
+	// the leader. Do not proceed if I'm not.
+	_, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		success = false
+		err = ErrWrongLeader
+		value = ""
+
+		DPrintf(DefaultStream, "Server %v is not leader for op %v. Not proceeding\n", kv.me, op.toString())
+		return
+	}
+
+	// Set up a channel with applyOps() to receive result of the op. Return value
+	// of this locked section is that channel.
+	appliedCh := func() chan string  {
+		DPrintf(LockStream, "Server %v is grabbing lock 1\n", kv.me)
+		kv.mu.Lock()
+		defer func() {
+			DPrintf(LockStream, "Server %v is releasing lock 1\n", kv.me)
+			kv.mu.Unlock()
+		}()
+
+		// Mark op started
+		// DPrintf(DefaultStream, "Server %v marked 'started' op %v\n", kv.me, op.toString())
+		kv.isStarted[opId] = true
+
+		// Set up channel
+		ch := make(chan string, 1)
+		kv.appliedChs[opId] = ch
+		return ch
+	}()
 
 	// Wait for result from applyOps(), or time out
 	timer := time.NewTimer(time.Millisecond * time.Duration(OpTimeout))
@@ -188,21 +226,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 	return
 }
 
-//
-// Removes the given entries from the back log.
-//
-func (kv *RaftKV) removeFromBackLog(opIds []OpId) {
-	DPrintf(LockStream, "Server %v is grabbing lock 3\n", kv.me)
-	kv.mu.Lock()
-	defer func() {
-		DPrintf(LockStream, "Server %v is releasing lock 3\n", kv.me)
-		kv.mu.Unlock()
-	}()
-
-	for _, opId := range opIds {
-		delete(kv.appliedBackLog, opId)
-	}
-}
 
 //
 // Executes a Get operation. Replies to the client with success and the
@@ -332,6 +355,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.kvMap = make(map[string]string)
 	kv.appliedChs = make(map[OpId](chan string))
 	kv.appliedBackLog = make(map[OpId]string)
+	kv.isStarted = make(map[OpId]bool)
 
 	// Start waiting for applied ops
 	go kv.applyOps()

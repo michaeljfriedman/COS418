@@ -29,10 +29,11 @@ func DPrintf(stream string, format string, a ...interface{}) (n int, err error) 
 
 // Constants for errors
 const (
-	OK             = "OK"
-	ErrNoKey       = "ErrNoKey"
-	ErrWrongLeader = "ErrWrongLeader"
-	ErrTimeout     = "ErrTimeout"
+	OK                = "OK"
+	ErrNoKey          = "ErrNoKey"
+	ErrStartedAlready = "ErrStartedAlready"
+	ErrTimeout        = "ErrTimeout"
+	ErrWrongLeader    = "ErrWrongLeader"
 )
 
 type Err string

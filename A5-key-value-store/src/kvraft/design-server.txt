@@ -52,8 +52,8 @@ Other functions
 
 - getBackLog(): Returns subset of appliedBackLog that pertains to a particular
   client.
-- removeFromBackLog(): Removes a set of op IDs from the back log.
-- removeFromIsStarted(): Removes a set of op IDs from the isStarted map.
+- freeMemForCompletedOps(): Clears back log and isStarted map entries for
+  a given set of ops the client has acknowledged as complete.
 
 
 Goroutines

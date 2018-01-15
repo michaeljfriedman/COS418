@@ -11,6 +11,7 @@ tests=(
   TestConcurrent
   TestUnreliable
   TestUnreliableOneKey
+  TestOnePartition
 )
 
 #----------------------------

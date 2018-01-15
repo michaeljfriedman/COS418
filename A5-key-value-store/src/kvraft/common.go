@@ -1,5 +1,24 @@
 package raftkv
 
+import (
+	"log"
+)
+
+//-----------------------------------------------------------------------------
+
+// Debugging tools
+
+const Debug = 1
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
+}
+
+//-----------------------------------------------------------------------------
+
 // Constants for errors
 const (
 	OK             = "OK"

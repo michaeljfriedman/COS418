@@ -104,7 +104,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 	// Clear "stale" ops from the back log (i.e. those the client says it got
 	// "success" replies for
 	kv.removeFromBackLog(ackedOps)
-	DPrintf("%v removed ops from back log: %v\n", kv.me, ackedOps)
+	DPrintf("Server %v removed ops from back log: %v\n", kv.me, ackedOps)
 
 	//---------------
 
@@ -112,7 +112,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 
 	// Make a new op
 	op := Op{key, putValue, t, opId}
-	DPrintf("%v got op %v\n", kv.me, op.toString())
+	DPrintf("Server %v got op %v\n", kv.me, op.toString())
 
 	// First, check if this op is a retry of an old op. Do not call
 	// Start() for a duplicate op. Return value indicates whether or not
@@ -131,7 +131,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 				err = ErrWrongLeader
 				value = ""
 
-				DPrintf("%v not proceeding op %v. Not leader\n", kv.me, op.toString())
+				DPrintf("Server %v not proceeding op %v. Not leader\n", kv.me, op.toString())
 				return false
 			}
 		}
@@ -144,7 +144,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 			err = OK
 			value = backLogValue
 
-			DPrintf("%v got op %v from back log. Returning result\n", kv.me, op.toString())
+			DPrintf("Server %v got op %v from back log. Returning result\n", kv.me, op.toString())
 			return false
 		}
 
@@ -161,19 +161,19 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 
 	// Wait for result from applyOps(), or time out
 	timer := time.NewTimer(time.Millisecond * time.Duration(OpTimeout))
-	DPrintf("%v started op %v. Waiting for completion...\n", kv.me, op.toString())
+	DPrintf("Server %v started op %v. Waiting for completion...\n", kv.me, op.toString())
 	select {
 	case value = <-kv.appliedChs[opId]:
 		// Op was successfully applied
 		success = true
 		err = OK
-		DPrintf("%v is done with op %v\n", kv.me, op.toString())
+		DPrintf("Server %v is done with op %v\n", kv.me, op.toString())
 	case <-timer.C:
 		// Timed out
 		success = false
 		err = ErrTimeout
 		value = ""
-		DPrintf("%v timed out op %v. Client must retry\n", kv.me, op.toString())
+		DPrintf("Server %v timed out op %v. Client must retry\n", kv.me, op.toString())
 	}
 
 	// Clear entry for this channel
@@ -243,7 +243,7 @@ func (kv *RaftKV) applyOps() {
 		applyMsg := <-kv.applyCh
 		op := applyMsg.Command.(Op)
 
-		DPrintf("%v got consensus for op %v\n. Applying...", kv.me, op.toString())
+		DPrintf("Server %v got consensus for op %v\n. Applying...", kv.me, op.toString())
 
 		// Apply op while locked
 		func() {
@@ -261,18 +261,18 @@ func (kv *RaftKV) applyOps() {
 				kv.kvMap[op.Key] += op.Value
 			}
 
-			DPrintf("%v applied op %v\n", kv.me, op.toString())
+			DPrintf("Server %v applied op %v\n", kv.me, op.toString())
 
 			// Send result to the corresponding pending handleOp(), if there
 			// is one for this op
 			ch, ok := kv.appliedChs[op.Id]
 			if ok {
 				ch <- value
-				DPrintf("%v sent result of op %v back to handleOp()\n", kv.me, op.toString())
+				DPrintf("Server %v sent result of op %v back to handleOp()\n", kv.me, op.toString())
 			} else {
 				// No pending handleOp(). Add this op to back log instead
 				kv.appliedBackLog[op.Id] = value
-				DPrintf("%v added result of op %v to back log\n", kv.me, op.toString())
+				DPrintf("Server %v added result of op %v to back log\n", kv.me, op.toString())
 			}
 		}()
 	}
@@ -288,7 +288,7 @@ func (kv *RaftKV) applyOps() {
 //
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
-	DPrintf("%v shut down\n", kv.me)
+	DPrintf("Server %v shut down\n", kv.me)
 }
 
 //
@@ -323,7 +323,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// Start waiting for applied ops
 	go kv.applyOps()
 
-	DPrintf("%v booted up\n", me)
+	DPrintf("Server %v booted up\n", me)
 
 	return kv
 }

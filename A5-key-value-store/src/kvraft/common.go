@@ -33,7 +33,8 @@ type PutAppendArgs struct {
 
 	// Piggy-backed data about other ops
 
-	// List of ops for which this client has received "success" replies
+	// List of ops that this client is "ack-ing" (i.e. client has received
+	// "success" reply for these ops)
 	AckedOps []OpId
 }
 
@@ -41,12 +42,6 @@ type PutAppendReply struct {
 	//WrongLeader bool // NOTE: "Renamed" to describe more general outcome
 	Success bool
 	Err     Err
-
-	// Piggy-backed data about other ops
-
-	// All other ops from this client that the server applied, but has not yet
-	// replied to this client. Key is op id, value is always empty string.
-	AppliedOps map[OpId]string
 }
 
 
@@ -56,7 +51,8 @@ type GetArgs struct {
 
 	// Piggy-backed data about other ops
 
-	// List of ops for which this client has received "success" replies
+	// List of ops that this client is "ack-ing" (i.e. client has received
+	// "success" reply for these ops)
 	AckedOps []OpId
 }
 
@@ -65,10 +61,4 @@ type GetReply struct {
 	Success bool
 	Err     Err
 	Value   string
-
-	// Piggy-backed data about other ops
-
-	// All other ops from this client that the server applied, but has not yet
-	// replied to this client. Key is op id, value is the result of Get.
-	AppliedOps map[OpId]string
 }

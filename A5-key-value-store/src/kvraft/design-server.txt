@@ -1,5 +1,5 @@
-Assignment 5 Key-Value Store - Design
-=====================================
+Assignment 5 Key-Value Store - Server Design
+============================================
 
 Data types
 ----------
@@ -64,15 +64,15 @@ Apply Ops -------------------------------------------->
     send "success" to it
   - Else, put op on back log
 
-Do Op (multiple occurrences) ------------------------->
-- Call Start() on raft if op ID is not in the log.
-  Reply to client with failure if I'm not leader.
-- (At this point, op ID must be in the log)
-- Wait for result from Apply Ops, or timeout after 1s
-  (ref: Piazza @254)
-- If go a reply from Apply Ops, reply to client with
+Handle Op (multiple occurrences) ------------------------->
+- Remove acked ops from back log.
+
+- Call Start() on raft.
+- If it turns out I'm not leader, reply to client with failure.
+- Check if op is in the back log. If it is, return the result
+  immediately.
+- Otherwise, wait for result from Apply Ops, or timeout after
+  1s (ref: Piazza @254)
+- If got a reply from Apply Ops, reply to client with
   success (and value, for a Get)
 - Else reply to client with failure
-
-- NOTE: In every reply, also piggy back all back-logged applied ops for that
-  client, and remove them from the back log.

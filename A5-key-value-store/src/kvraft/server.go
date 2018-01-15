@@ -129,8 +129,9 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 	DPrintf("%v got op %v\n", kv.me, op.toString())
 
 	// First, check if this op is a retry of an old op. Do not call
-	// Start() for a duplicate op.
-	go func() {
+	// Start() for a duplicate op. Return value indicates whether or not
+	// to keep going after this locked section finishes.
+	proceed := go func() bool {
 		kv.mu.Lock()
 		defer kv.mu.Unlock()
 
@@ -145,14 +146,32 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 				value = ""
 
 				DPrintf("%v not proceeding op %v. Not leader\n", kv.me, op.toString())
-				return
+				return false
 			}
+		}
+
+		// Check if result of the op is in the back log first
+		backLogValue, ok := kv.appliedBackLog[opId]
+		if ok {
+			// Result is in back log. Return it
+			success = true
+			err = OK
+			value = backLogValue
+
+			DPrintf("%v got op %v from back log. Returning result\n", kv.me, op.toString())
+			return false
 		}
 
 		// Set up channel with applyOps() for a result from this op
 		ch := make(chan string, 1)
 		kv.appliedChs[opId] = ch
+
+		return true
 	}()
+
+	if !proceed {
+		return
+	}
 
 	// Wait for result from applyOps(), or time out
 	timer := time.NewTimer(time.Millisecond * time.Duration(OpTimeout))
@@ -180,22 +199,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, ack
 }
 
 //
-// Returns the subset of the back log with ops from the given clientId.
-//
-func (kv *RaftKV) getBackLog(clientId int) map[OpId]string {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	subset := make(map[OpId]string)
-	for opId, value := range kv.appliedBackLog {
-		if opId.ClientId == clientId {
-			subset[opId] = value
-		}
-	}
-	return subset
-}
-
-//
 // Removes the given entries from the back log.
 //
 func (kv *RaftKV) removeFromBackLog(opIds []OpId) {
@@ -220,7 +223,6 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	reply.Success = success
 	reply.Err = err
 	reply.Value = value
-	reply.AppliedOps = kv.getBackLog(args.OpId.ClientId)
 }
 
 //
@@ -234,7 +236,6 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Reply to client
 	reply.Success = success
 	reply.Err = err
-	reply.AppliedOps = kv.getBackLog(args.OpId.ClientId)
 }
 
 //------------------------------------------------------------------------------

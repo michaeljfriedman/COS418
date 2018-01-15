@@ -9,11 +9,10 @@ Sat 1/13:
 * Server: Add debug statements in the code you have so far
 * Work on isDuplicate()
 
------> YOU ARE HERE
 - Need to catch edge case: Say I (server) get an op and call Start() for it,
   but it times out. So I tell the client to retry. A server will *not* reply
-  to the client about an op unless there is an appliedCh for it at the time
-  it is applied. So, if that retry reaches the leader before the op is
+  "success" to the client about an op unless there is an appliedCh for it at
+  the time it is applied. So, if that retry reaches the leader before the op is
   finished/applied, then they'll get a reply. **But** if the op is applied
   *before* the retry reaches the leader, then the leader will not have an
   appliedCh for it. So he will think it's a duplicate, not Start(), and tell
@@ -25,8 +24,9 @@ Sat 1/13:
         not yet replied to the client.
       * When an op is applied, it is added to the back log if there isn't
         currently a outstanding appliedCh for it.
-      * Replying the back log: Whenever the server replies to a client, it
-        piggy-backs all ops in the back log as well as "successful".
+      * Replying ops in the back log: Whenever the server receives an op from
+        a client, it first checks if the op is in the back log, and returns its
+        result to a client immediately if it is.
       * Clearing the stale back log: Whenever a server receives an op from a
         client, also clear out all ops in the back log for which the client
         says it heard successful replies (see below).
@@ -37,18 +37,20 @@ Sat 1/13:
 
 
 Sun 1/14:
-- Write client
+- Write client     <------------------------------------------ YOU ARE HERE
   - Design
   - Implement
 
-- How to detect duplicates without checking the log? - put this off until part II
+- Test up to here
+
+- How to detect duplicates without checking the log? - (put this off until part II)
   - **Solution**. In server:
     - Allow duplicate entries to be Start()'ed, but don't *apply* them more
       than once.
     - Make a map: op id -> bool indicating applied/not applied.
     - Every time you receive an applied op from applyCh, if there is no entry
       for it in this map (i.e. it is not applied), then apply it and mark it
-      applied.
+      applied in the map.
     - Whenever you receive a client request, clear out all ops from this map
       for which the client says it heard successful replies (since this means
       it will not send retries anymore).

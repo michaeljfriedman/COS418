@@ -49,17 +49,50 @@ Sun 1/14:
 
 Mon 1/15:
 - Part II: Detect duplicate ops    <------------------------------ YOU ARE HERE
+
+  - Make sure to cover this case:
+
+    Client                        Server               Raft
+    ------                        ------               ----
+    Request op 1 --------------->
+                                  Start(1) ---------->
+                                                       Start 1st occ of op 1
+                                  Timeout
+               <----------------- Retry op 1
+    Retry op 1 ----------------->
+                                  Start(1) ---------->
+                                                       Start 2nd occ of op 1
+                                             <-------- Committed 1st occ of op 1
+                                  Apply op 1
+                        <-------- Op 1 success
+    Op 2, compOps = [1] -------->
+                                  Rm op 1 from
+                                  isApplied
+                                              <------- Committed 2nd occ of op 1
+                                  Apply op 1
+
+                                ~~DUPLICATE~~
+
   - **Solution**. In server:
-    - Stop duplicate entries from being Start()'ed.
-    - Make a map: op id -> bool indicating started/not started.
+    - Allow duplicate ops to be Start()'ed, but don't *apply* them twice.
+    - Make a map: op id -> bool indicating applied/not applied. Use to
+      check if op was applied before applying it.
+    - We need to clear this map of stale entries to save space, but it can't be
+      cleared until *after* all duplicate ops have been received/ignored on
+      *applyCh*
+
+    - Add completedOps list to the Op data type
+
+    - Every time you pull an op off applyCh:
+      - If op is in the map, ignore it (i.e. don't apply).
+      - Otherwise:
+        - Apply it
+        - Mark it applied in the map
+        - Remove all completedOps from the map, and from the back log
+      - Then proceed as usual.
+
     - Every time you receive an op from a client:
+      - Construct the new Op, also including the client's list of completed ops
       - (Locked) First check if op is in the back log, and return its value if
-        so.
-      - (Locked) Then check in this map if op has been started. If so, return
-        unsuccessful to client. (Client will retry again later and op will
-        eventually appear in back log.)
-      - Otherwise, Start() and if I'm leader, (locked) mark the op started in
-        this map. Then proceed as usual from here.
-    - Also, whenever you receive an op from a client, clear out all ops from
-      this map for which the client says it heard successful replies (since this
-      means it will not send retries anymore).
+        it is.
+      - Otherwise, Start(). Then proceed as usual from here.

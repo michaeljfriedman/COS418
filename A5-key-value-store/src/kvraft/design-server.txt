@@ -9,13 +9,14 @@ Op
 - Value
 - Type (Get/Put/Append)
 - Id (client ID, op ID for that client)
+- CompletedOps (list of op IDs, originally provided by client)
 
 RaftKV
 - appliedChs (map: op ID -> string chan): Indicates if op was applied and I should
   send success reply to client
 - appliedBackLog (map: op ID -> string): Stores result of the op if it was
   applied was not immediately returned to client due to timeout.
-- isStarted (map: op ID -> bool): Indicates if op was started in raft, to detect
+- isApplied (map: op ID -> bool): Indicates if op was applied already, to detect
   duplicates.
 
 
@@ -52,7 +53,7 @@ Other functions
 
 - getBackLog(): Returns subset of appliedBackLog that pertains to a particular
   client.
-- freeMemForCompletedOps(): Clears back log and isStarted map entries for
+- freeMemForCompletedOps(): Clears back log and isApplied map entries for
   a given set of ops the client has acknowledged as complete.
 
 
@@ -63,24 +64,23 @@ Apply Ops -------------------------------------------->
 - Loop:
   - Read from applyCh
   - Lock until end of loop
+  - If op was already applied, skip the rest of loop
   - Apply op
+  - Mark op applied in isApplied
+  - Remove from back log and isApplied the list of
+    completed ops piggy-backed in this op
   - If I have an op handler pending for this op ID,
     send "success" to it
   - Else, put op on back log
 
 Handle Op (multiple occurrences) ------------------------->
-- Remove completed ops from back log and from isStarted
-  map.
-
+- Construct the new op, also including the client's list
+  of completed ops.
 - Check if op is in the back log. If it is, return the result
   immediately.
-- Check if op has been started already. If so, return
-  unsuccessful to client.
 - Call Start() on raft.
 - If it turns out I'm not leader, reply to client with failure.
-- Otherwise:
-  - Mark op started
-  - Wait for result from Apply Ops, or timeout after 1s
+- Otherwise wait for result from Apply Ops, or timeout after 1s
     (ref: Piazza @254)
 - If got a reply from Apply Ops, reply to client with
   success (and value, for a Get)

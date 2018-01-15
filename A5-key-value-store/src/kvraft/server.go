@@ -90,14 +90,9 @@ const OpTimeout = 1000
 // Clears up state maintained about ops that the client has acknolwedged are
 // completed: back log and isApplied map.
 //
+// Must be called while locked (i.e. assumes caller is already locked).
+//
 func (kv *RaftKV) freeMemForCompletedOps(completedOps []OpId) {
-	DPrintf(LockStream, "Server %v is grabbing lock 3\n", kv.me)
-	kv.mu.Lock()
-	defer func() {
-		DPrintf(LockStream, "Server %v is releasing lock 3\n", kv.me)
-		kv.mu.Unlock()
-	}()
-
 	for _, opId := range completedOps {
 		delete(kv.appliedBackLog, opId)
 		delete(kv.isApplied, opId)

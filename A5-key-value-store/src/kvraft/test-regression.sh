@@ -12,6 +12,8 @@ tests=(
   TestUnreliable
   TestUnreliableOneKey
   TestOnePartition
+  TestManyPartitionsOneClient
+  TestManyPartitionsManyClients
 )
 
 #----------------------------

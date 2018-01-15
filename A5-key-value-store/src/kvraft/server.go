@@ -17,13 +17,16 @@ import (
 // An Op represents a Get, Put, or Append operation
 //
 type Op struct {
-	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	Key   string
 	Value string
 	Type  string  // Get, Put, or Append
 	Id    OpId
+
+	// Piggy-backed information about previous ops. These the ops
+	// that the client has acknowledged are completed.
+	CompletedOps []OpId
 }
 
 //
@@ -69,10 +72,10 @@ type RaftKV struct {
 	// for all back-logged ops in its next reply to the client.
 	appliedBackLog map[OpId]string
 
-	// Indicates whether an op has been started in Raft. (Just the existence of
-	// an entry in this map indicates it has been started. If it has not, or if
+	// Indicates whether an op has been applied. (Just the existence of
+	// an entry in this map indicates it has been applied. If it has not, or if
 	// it has been acknowledged as completed by the client, there is no entry.)
-	isStarted map[OpId]bool
+	isApplied map[OpId]bool
 }
 
 //------------------------------------------------------------------------------
@@ -85,7 +88,7 @@ const OpTimeout = 1000
 
 //
 // Clears up state maintained about ops that the client has acknolwedged are
-// completed: back log and isStarted map.
+// completed: back log and isApplied map.
 //
 func (kv *RaftKV) freeMemForCompletedOps(completedOps []OpId) {
 	DPrintf(LockStream, "Server %v is grabbing lock 3\n", kv.me)
@@ -97,37 +100,29 @@ func (kv *RaftKV) freeMemForCompletedOps(completedOps []OpId) {
 
 	for _, opId := range completedOps {
 		delete(kv.appliedBackLog, opId)
-		delete(kv.isStarted, opId)
+		delete(kv.isApplied, opId)
 	}
 }
 
 //
 // Starts a Get/Put/Append operation. This will either return false for
 // `success`, along with an err; or it will return true for `success` with
-// OK for err, and the value received from a Get op `value` (if not a Get
-// op, `value` will be empty).
+// OK for err, and the value received from a Get op (if not a Get op
+// value will be the empty string).
 //
 // `success` indicates whether this server should reply to the client
-// that the op was successful, or whether the client should retry the op.
+// that the op was successful, or that it was not and the client should
+// retry the op.
 //
-// (In case it's not clear, the param `t` is the type Get/Put/Append.
+// (In case it's not clear, the param `t` is the type of op: Get/Put/Append.
 // Can't use the word "type" since this is a keyword in Go.)
 func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, completedOps []OpId) (success bool, err Err, value string) {
-	op := Op{key, putValue, t, opId}
+	op := Op{key, putValue, t, opId, completedOps}
 	DPrintf(DefaultStream, "Server %v got op %v\n", kv.me, op.toString())
 
-	// Clear state about "stale" ops (i.e. those the client acknowledges
-	// are completed)
-	kv.freeMemForCompletedOps(completedOps)
-	DPrintf(DefaultStream, "Server %v cleared state about completed ops: %v\n", kv.me, completedOps)
-
-	//---------------
-
-	// Do the op
-
-	// First, check some conditions before starting a new op in Raft. Must be
-	// locked for safety. `proceed` indicates whether or not to proceed after
-	// this locked section finishes.
+	// First, check if result is in the back log. Must be locked for safety.
+	// `proceed` indicates whether or not to proceed after this locked
+	// section finishes.
 	DPrintf(LockStream, "Server %v is grabbing lock 5\n", kv.me)
 	proceed := func() bool {
 		kv.mu.Lock()
@@ -136,7 +131,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 			kv.mu.Unlock()
 		}()
 
-		// First, check if result of op is in the back log
 		backLogValue, ok := kv.appliedBackLog[opId]
 		if ok {
 			// Result is in back log. Return it
@@ -148,18 +142,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 			return false
 		}
 
-		// Check if op has already been started
-		_, ok = kv.isStarted[opId]
-		if ok {
-			// Op has already been started. Tell client to retry for result in a bit.
-			success = false
-			err = ErrStartedAlready
-			value = ""
-
-			DPrintf(DefaultStream, "Server %v already started op %v. Not proceeding\n", kv.me, op.toString())
-			return false
-		}
-
 		return true
 	}()
 
@@ -167,8 +149,8 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 		return
 	}
 
-	// Op not started yet. Try to start this op in Raft, making sure that I am
-	// the leader. Do not proceed if I'm not.
+	// Try to start this op in Raft, making sure that I am the leader.
+	// Do not proceed if I'm not.
 	_, _, isLeader := kv.rf.Start(op)
 	if !isLeader {
 		success = false
@@ -179,8 +161,8 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 		return
 	}
 
-	// Set up a channel with applyOps() to receive result of the op. Return value
-	// of this locked section is that channel.
+	// Set up a channel with applyOps() to receive result of the op.
+	// Return value of this locked section is that channel.
 	appliedCh := func() chan string  {
 		DPrintf(LockStream, "Server %v is grabbing lock 1\n", kv.me)
 		kv.mu.Lock()
@@ -188,10 +170,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 			DPrintf(LockStream, "Server %v is releasing lock 1\n", kv.me)
 			kv.mu.Unlock()
 		}()
-
-		// Mark op started
-		// DPrintf(DefaultStream, "Server %v marked 'started' op %v\n", kv.me, op.toString())
-		kv.isStarted[opId] = true
 
 		// Set up channel
 		ch := make(chan string, 1)
@@ -260,10 +238,10 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // Applying operations
 
 //
-// Continuously reads from the applyCh for new ops to apply. When an op comes
-// in, applies it, and sends the op's result to the pending handleOp() via the
-// corresponding chan in appliedChs, if there is one. If there isn't, adds
-// the op to the back log.
+// Continuously reads from the applyCh for new ops to apply. When a
+// non-duplicate op comes in, applies it, and sends the op's result to the
+// pending handleOp() via the corresponding chan in appliedChs, if there is
+// one. If there isn't, adds the op to the back log.
 //
 // The result will contain either the value, if it's a Get op, or the empty
 // string, if it's a Put/Append.
@@ -274,9 +252,9 @@ func (kv *RaftKV) applyOps() {
 		applyMsg := <-kv.applyCh
 		op := applyMsg.Command.(Op)
 
-		DPrintf(DefaultStream, "Server %v got consensus for op %v. Applying...\n", kv.me, op.toString())
+		DPrintf(DefaultStream, "Server %v got consensus for op %v\n", kv.me, op.toString())
 
-		// Apply op while locked
+		// Lock while applying op
 		func() {
 			DPrintf(LockStream, "Server %v is grabbing lock 4\n", kv.me)
 			kv.mu.Lock()
@@ -284,6 +262,13 @@ func (kv *RaftKV) applyOps() {
 				DPrintf(LockStream, "Server %v is releasing lock 4\n", kv.me)
 				kv.mu.Unlock()
 			}()
+
+			// Skip if op is a duplicate
+			_, ok := kv.isApplied[op.Id]
+			if ok {
+				DPrintf(DefaultStream, "Server %v not applying duplicate op %v\n", kv.me, op.toString())
+				return
+			}
 
 			// Apply op
 			var value string
@@ -296,7 +281,14 @@ func (kv *RaftKV) applyOps() {
 				kv.kvMap[op.Key] += op.Value
 			}
 
+			kv.isApplied[op.Id] = true
+
 			DPrintf(DefaultStream, "Server %v applied op %v\n", kv.me, op.toString())
+
+			// Clear state about "stale" ops (i.e. those the client acknowledges
+			// are completed)
+			kv.freeMemForCompletedOps(op.CompletedOps)
+			DPrintf(DefaultStream, "Server %v cleared state about completed ops: %v\n", kv.me, op.CompletedOps)
 
 			// Send result to the corresponding pending handleOp(), if there
 			// is one for this op
@@ -355,7 +347,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.kvMap = make(map[string]string)
 	kv.appliedChs = make(map[OpId](chan string))
 	kv.appliedBackLog = make(map[OpId]string)
-	kv.isStarted = make(map[OpId]bool)
+	kv.isApplied = make(map[OpId]bool)
 
 	// Start waiting for applied ops
 	go kv.applyOps()

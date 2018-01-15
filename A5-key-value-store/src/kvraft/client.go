@@ -140,7 +140,7 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 		} else {
 			// Op was unsuccessful. Retry on the next server
 			DPrintf("Client %v got failure from server %v for op %v. Retrying.\n", ck.id, ck.currentLeader, opString)
-			ck.currentLeader++
+			ck.currentLeader = (ck.currentLeader + 1) % len(ck.servers)
 		}
 	}
 

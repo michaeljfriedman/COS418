@@ -9,7 +9,7 @@ Sat 1/13:
 * Server: Add debug statements in the code you have so far
 * Work on isDuplicate()
 
-- Need to catch edge case: Say I (server) get an op and call Start() for it,
+* Need to catch edge case: Say I (server) get an op and call Start() for it,
   but it times out. So I tell the client to retry. A server will *not* reply
   "success" to the client about an op unless there is an appliedCh for it at
   the time it is applied. So, if that retry reaches the leader before the op is
@@ -18,7 +18,7 @@ Sat 1/13:
   appliedCh for it. So he will think it's a duplicate, not Start(), and tell
   the client to retry. Other servers will deny it because they're not the
   leader. So the client will retry forever.
-  - **Solution**
+  * **Solution**
     * Server:
       * Add a queue "applied back log", which keeps track of ops applied but
         not yet replied to the client.
@@ -30,25 +30,25 @@ Sat 1/13:
       * Clearing the stale back log: Whenever a server receives an op from a
         client, also clear out all ops in the back log for which the client
         says it heard successful replies (see below).
-    - Client: Maintain a list of ops you heard successful replies for. When a
+    * Client: Maintain a list of ops you heard successful replies for. When a
       successful reply comes in, add the op to that list. Then, whenever a new
       op is requested, piggy-back all ops in this list as well.
-      - NOTE: This list will grow without bound. Is this ok?
+      * NOTE: This list will grow without bound. Is this ok? -- Not sure?
 
 
 Sun 1/14:
-- Write client
+* Write client
   * Design
   * Implement
-  * Add debug statements       <-------------------------- YOU ARE HERE
+  * Add debug statements
 
-- Test up to here
-  - Seems to be passing... But want to make sure it works reliably. Make a
+* Test up to here
+  * Seems to be passing... But want to make sure it works reliably. Make a
     test-regression.sh, and run Basic test 20 or so times.
 
 
 Mon 1/15:
-- How to detect duplicates without checking the log? - (put this off until part II)
+- Part II: Detect duplicate ops    <------------------------------ YOU ARE HERE
   - **Solution**. In server:
     - Allow duplicate entries to be Start()'ed, but don't *apply* them more
       than once.

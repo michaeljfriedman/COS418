@@ -32,10 +32,10 @@ func opToString(key string, value string, t string, opId OpId) string {
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 
-	id            int64  // my client id
-	currentOpId   int    // value to be used as OpId.ClientOpId
+	id            int64 // my client id
+	currentOpId   int   // value to be used as OpId.ClientOpId
 	completedOps  []OpId
-	currentLeader int    // index into servers
+	currentLeader int // index into servers
 }
 
 //
@@ -151,7 +151,6 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 	return replyValue
 }
 
-
 //
 // Fetches and returns the current value for a key, or returns "" if the
 // key does not exist.
@@ -159,7 +158,6 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 func (ck *Clerk) Get(key string) string {
 	return ck.handleOp(key, "", Get)
 }
-
 
 //
 // Inserts a key-value pair.

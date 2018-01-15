@@ -21,7 +21,7 @@ type Op struct {
 	// otherwise RPC will break.
 	Key   string
 	Value string
-	Type  string  // Get, Put, or Append
+	Type  string // Get, Put, or Append
 	Id    OpId
 
 	// Piggy-backed information about previous ops. These the ops
@@ -84,7 +84,6 @@ type RaftKV struct {
 
 // Timeout for an operation to commit/be applied, in milliseconds.
 const OpTimeout = 1000
-
 
 //
 // Clears up state maintained about ops that the client has acknolwedged are
@@ -158,7 +157,7 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 
 	// Set up a channel with applyOps() to receive result of the op.
 	// Return value of this locked section is that channel.
-	appliedCh := func() chan string  {
+	appliedCh := func() chan string {
 		DPrintf(LockStream, "Server %v is grabbing lock 1\n", kv.me)
 		kv.mu.Lock()
 		defer func() {
@@ -198,7 +197,6 @@ func (kv *RaftKV) handleOp(key string, putValue string, t string, opId OpId, com
 
 	return
 }
-
 
 //
 // Executes a Get operation. Replies to the client with success and the

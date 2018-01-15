@@ -20,7 +20,7 @@ const (
 func DPrintf(stream string, format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
 		streamPrefix := fmt.Sprintf("[%v] ", stream)
-		log.Printf(streamPrefix + format, a...)
+		log.Printf(streamPrefix+format, a...)
 	}
 	return
 }
@@ -70,7 +70,6 @@ type PutAppendReply struct {
 	Success bool
 	Err     Err
 }
-
 
 type GetArgs struct {
 	Key  string

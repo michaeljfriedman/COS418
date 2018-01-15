@@ -50,12 +50,16 @@ Sun 1/14:
 Mon 1/15:
 - Part II: Detect duplicate ops    <------------------------------ YOU ARE HERE
   - **Solution**. In server:
-    - Allow duplicate entries to be Start()'ed, but don't *apply* them more
-      than once.
-    - Make a map: op id -> bool indicating applied/not applied.
-    - Every time you receive an applied op from applyCh, if there is no entry
-      for it in this map (i.e. it is not applied), then apply it and mark it
-      applied in the map.
-    - Whenever you receive a client request, clear out all ops from this map
-      for which the client says it heard successful replies (since this means
-      it will not send retries anymore).
+    - Stop duplicate entries from being Start()'ed.
+    - Make a map: op id -> bool indicating started/not started.
+    - Every time you receive an op from a client:
+      - (Locked) First check if op is in the back log, and return its value if
+        so.
+      - (Locked) Then check in this map if op has been started. If so, return
+        unsuccessful to client. (Client will retry again later and op will
+        eventually appear in back log.)
+      - Otherwise, Start() and if I'm leader, (locked) mark the op started in
+        this map. Then proceed as usual from here.
+    - Also, whenever you receive an op from a client, clear out all ops from
+      this map for which the client says it heard successful replies (since this
+      means it will not send retries anymore).

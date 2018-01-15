@@ -11,9 +11,13 @@ Op
 - Id (client ID, op ID for that client)
 
 RaftKV
-- Add appliedChs, map: op ID -> bool chan (indicates
-  if op was applied and I should send success reply
-  to client)
+- appliedChs (map: op ID -> string chan): Indicates if op was applied and I should
+  send success reply to client
+- appliedBackLog (map: op ID -> string): Stores result of the op if it was
+  applied was not immediately returned to client due to timeout.
+- isStarted (map: op ID -> bool): Indicates if op was started in raft, to detect
+  duplicates.
+
 
 
 
@@ -46,10 +50,10 @@ applyOps()
 Other functions
 ---------------
 
-- isDuplicate(): Checks whether an opId has already been Start()'ed/applied
 - getBackLog(): Returns subset of appliedBackLog that pertains to a particular
   client.
 - removeFromBackLog(): Removes a set of op IDs from the back log.
+- removeFromIsStarted(): Removes a set of op IDs from the isStarted map.
 
 
 Goroutines
@@ -65,14 +69,19 @@ Apply Ops -------------------------------------------->
   - Else, put op on back log
 
 Handle Op (multiple occurrences) ------------------------->
-- Remove acked ops from back log.
+- Remove completed ops from back log and from isStarted
+  map.
 
-- Call Start() on raft.
-- If it turns out I'm not leader, reply to client with failure.
 - Check if op is in the back log. If it is, return the result
   immediately.
-- Otherwise, wait for result from Apply Ops, or timeout after
-  1s (ref: Piazza @254)
+- Check if op has been started already. If so, return
+  unsuccessful to client.
+- Call Start() on raft.
+- If it turns out I'm not leader, reply to client with failure.
+- Otherwise:
+  - Mark op started
+  - Wait for result from Apply Ops, or timeout after 1s
+    (ref: Piazza @254)
 - If got a reply from Apply Ops, reply to client with
   success (and value, for a Get)
 - Else reply to client with failure

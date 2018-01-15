@@ -9,6 +9,7 @@
 tests=(
   TestBasic
   TestConcurrent
+  TestUnreliable
 )
 
 #----------------------------

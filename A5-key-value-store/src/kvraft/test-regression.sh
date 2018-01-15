@@ -8,6 +8,7 @@
 # All the known passing tests. Update this when you pass more tests.
 tests=(
   TestBasic
+  TestConcurrent
 )
 
 #----------------------------

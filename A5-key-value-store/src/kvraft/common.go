@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"fmt"
 	"log"
 )
 
@@ -10,9 +11,16 @@ import (
 
 const Debug = 1
 
-func DPrintf(format string, a ...interface{}) (n int, err error) {
+// Debugging streams
+const (
+	DefaultStream = "Default"
+	LockStream    = "Lock"
+)
+
+func DPrintf(stream string, format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
-		log.Printf(format, a...)
+		streamPrefix := fmt.Sprintf("[%v] ", stream)
+		log.Printf(streamPrefix + format, a...)
 	}
 	return
 }

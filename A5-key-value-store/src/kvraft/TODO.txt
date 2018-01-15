@@ -43,6 +43,8 @@ Sun 1/14:
   * Add debug statements       <-------------------------- YOU ARE HERE
 
 - Test up to here
+  - Seems to be passing... But want to make sure it works reliably. Make a
+    test-regression.sh, and run Basic test 20 or so times.
 
 
 Mon 1/15:

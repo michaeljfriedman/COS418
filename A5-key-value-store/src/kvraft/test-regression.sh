@@ -14,6 +14,9 @@ tests=(
   TestOnePartition
   TestManyPartitionsOneClient
   TestManyPartitionsManyClients
+  TestPersistOneClient
+  TestPersistConcurrent  # this covers TestPersistConcurrentUnreliable too
+  TestPersistPartition   # this covers TestPersistPartitionUnreliable too
 )
 
 #----------------------------

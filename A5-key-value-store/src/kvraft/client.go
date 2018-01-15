@@ -1,8 +1,29 @@
 package raftkv
 
-import "labrpc"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	"labrpc"
+	"math/big"
+)
+
+//-----------------------------------------------------------------------------
+
+// Debugging tools
+
+//
+// Returns a string form for the op with given parameters. `t` is the type
+// of op (Get, Put, Append).
+//
+func opToString(key string, value string, t string, opId OpId) string {
+	if t == Get {
+		return fmt.Sprintf("(%v, %v): %v(%v)", opId.ClientId, opId.ClientOpId,
+			t, key)
+	} else {
+		return fmt.Sprintf("(%v, %v): %v(%v, %v)", opId.ClientId, opId.ClientOpId,
+			t, key, value)
+	}
+}
 
 //-----------------------------------------------------------------------------
 
@@ -43,6 +64,8 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.completedOps = make([]OpId, 0)
 	ck.currentLeader = 0
 
+	DPrintf("Client %v created\n", ck.id)
+
 	return ck
 }
 
@@ -68,12 +91,18 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 	opId := OpId{ck.id, ck.currentOpId}
 	ck.currentOpId++
 
+	opString := opToString(key, value, t, opId)
+	DPrintf("Client %v starting op %v\n", ck.id, opString)
+
 	// Keep retrying op until we get a successful response
 	var replyValue string
 	for {
 		// Make a request for this op to the current leader
 		var ok bool
 		var success bool
+
+		DPrintf("Client %v making request to server %v for op %v\n", ck.id, ck.currentLeader, opString)
+
 		if t == Get {
 			args := GetArgs{
 				key,
@@ -106,9 +135,11 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 		// Check if reply was successful
 		if ok && success {
 			// Op is done!
+			DPrintf("Client %v got success from server %v for op %v\n", ck.id, ck.currentLeader, opString)
 			break
 		} else {
 			// Op was unsuccessful. Retry on the next server
+			DPrintf("Client %v got failure from server %v for op %v. Retrying.\n", ck.id, ck.currentLeader, opString)
 			ck.currentLeader++
 		}
 	}
@@ -116,6 +147,7 @@ func (ck *Clerk) handleOp(key string, value string, t string) string {
 	// Add op to completed ops
 	ck.completedOps = append(ck.completedOps, opId)
 
+	DPrintf("Client %v is returning from op %v\n", ck.id, opString)
 	return replyValue
 }
 

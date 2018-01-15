@@ -40,7 +40,7 @@ Sun 1/14:
 - Write client
   * Design
   * Implement
-  - Add debug statements       <-------------------------- YOU ARE HERE
+  * Add debug statements       <-------------------------- YOU ARE HERE
 
 - Test up to here
 

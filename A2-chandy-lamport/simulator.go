@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"sync"
 )
 
 // Max random delay added to packet delivery
@@ -26,14 +27,18 @@ type Simulator struct {
 	logger         *Logger
 	// TODO: ADD MORE FIELDS HERE
 
-	// Field for collecting global snapshot
-	snapshotStats *SyncMap // snapshot id -> ServerSnapshotStats
+	// Fields for collecting global snapshot
+	mu sync.Mutex
+
+	// (server id, snapshot id) pair -> is that server done with that snapshot?
+	// (implemented as a channel, which holds only 1 bool value)
+	isDone map[ServerSnapshotPair]chan bool
 }
 
-// A container for the stats about each server during a snapshot
-type ServerSnapshotStats struct {
-	isDone *SyncMap // server id -> is that server done snapshotting?
-	// (chan bool, where chan will hold only 1 value)
+// A container for a server id and snapshot id.
+type ServerSnapshotPair struct {
+	serverId   string
+	snapshotId int
 }
 
 func NewSimulator() *Simulator {
@@ -42,7 +47,8 @@ func NewSimulator() *Simulator {
 		0,
 		make(map[string]*Server),
 		NewLogger(),
-		NewSyncMap(),
+		sync.Mutex{},
+		make(map[ServerSnapshotPair]chan bool),
 	}
 }
 
@@ -120,17 +126,17 @@ func (sim *Simulator) StartSnapshot(serverId string) {
 	sim.logger.RecordEvent(sim.servers[serverId], StartSnapshot{serverId, snapshotId})
 	// TODO: IMPLEMENT ME
 
-	// Init isDone map, which maps each server (by id) to a boolean
+	// Init isDone map, which maps each (snapshot id, server id) pair to a boolean
 	// indicating whether it's done snapshotting. Store this boolean in a
 	// *channel* to automatically block until a server is done.
 	//
 	// (See CollectSnapshot() for how this is used)
-	isDone := NewSyncMap()
+	sim.mu.Lock()
 	for serverId, _ := range sim.servers {
 		ch := make(chan bool, 1)
-		isDone.Store(serverId, ch)
+		sim.isDone[ServerSnapshotPair{serverId, snapshotId}] = ch
 	}
-	sim.snapshotStats.Store(snapshotId, &ServerSnapshotStats{isDone})
+	sim.mu.Unlock()
 
 	// Tell server to start snapshot
 	server := sim.servers[serverId]
@@ -143,19 +149,17 @@ func (sim *Simulator) NotifySnapshotComplete(serverId string, snapshotId int) {
 	sim.logger.RecordEvent(sim.servers[serverId], EndSnapshot{serverId, snapshotId})
 	// TODO: IMPLEMENT ME
 
-	// Get stats for this snapshot
-	val, ok := sim.snapshotStats.Load(snapshotId)
-	checkOk(ok, "Error: sim.snapshotStats.Load() failed")
-	serverStats := val.(*ServerSnapshotStats)
-
 	// Mark that this server is done with snapshot
 	//
 	// Do this by sending `true` into this server's chan. CollectSnapshot() reads
 	// from this chan to determine when the server is done.
-	val, ok = serverStats.isDone.Load(serverId)
-	checkOk(ok, "Error: serverStats.isDone.Load() failed")
-	ch := val.(chan bool)
-	ch <- true
+	sim.mu.Lock()
+	ch, ok := sim.isDone[ServerSnapshotPair{serverId, snapshotId}]
+	sim.mu.Unlock()
+
+	checkOk(ok, fmt.Sprintf("Error: retrieving isDone chan for snapshot %v, server %v failed", snapshotId, serverId))
+
+	ch <- true // send true outside the locked section because this may block
 }
 
 // Collect and merge snapshot state from all the servers.
@@ -163,22 +167,17 @@ func (sim *Simulator) NotifySnapshotComplete(serverId string, snapshotId int) {
 func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 	// TODO: IMPLEMENT ME
 
-	// Get stats for this snapshot
-	val, ok := sim.snapshotStats.Load(snapshotId)
-	checkOk(ok, "Error: sim.snapshotStats.Load() failed")
-	serverStats := val.(*ServerSnapshotStats)
-
 	// Wait until all servers are done
 	//
 	// Pulling a value off a server's chan indicates that it's done
 	// (NotifySnapshotComplete() puts these values on the chan.)
 	for serverId, _ := range sim.servers {
-		val, ok := serverStats.isDone.Load(serverId)
-		checkOk(ok, "Error: serverStats.isDone.Load() failed")
-		ch := val.(chan bool)
-		if <-ch {
-			continue // this server is done
-		}
+		sim.mu.Lock()
+		ch, ok := sim.isDone[ServerSnapshotPair{serverId, snapshotId}]
+		sim.mu.Unlock()
+
+		checkOk(ok, fmt.Sprintf("Error: retrieving isDone chan for snapshot %v, server %v failed", snapshotId, serverId))
+		<-ch // read from chan outside the locked section because this will block
 	}
 
 	// Collect global snapshot from local snapshots of each server

@@ -1,7 +1,10 @@
 package chandy_lamport
 
-import "log"
-
+import (
+	"fmt"
+	"log"
+	"sync"
+)
 
 // The main participant of the distributed snapshot protocol.
 // Servers exchange token messages and marker messages among each other.
@@ -9,23 +12,24 @@ import "log"
 // Marker messages represent the progress of the snapshot process. The bulk of
 // the distributed protocol is implemented in `HandlePacket` and `StartSnapshot`.
 type Server struct {
-	Id                  string
-	Tokens              int
-	sim                 *Simulator
-	outboundLinks       map[string]*Link // key = link.dest
-	inboundLinks        map[string]*Link // key = link.src
+	Id            string
+	Tokens        int
+	sim           *Simulator
+	outboundLinks map[string]*Link // key = link.dest
+	inboundLinks  map[string]*Link // key = link.src
 	// TODO: ADD MORE FIELDS HERE
 
 	// Keeps track of snapshots with LocalSnapshotStates
-	snapshots           *SyncMap  // snapshot id -> local snapshot state
+	mu        sync.Mutex
+	snapshots map[int]*LocalSnapshotState // snapshot id -> local snapshot state
 }
 
 // A container for this server's local snapshot state
 type LocalSnapshotState struct {
+	mu                 sync.Mutex
 	Tokens             int
 	MsgsRecvd          []*SnapshotMessage
-	isRecordingLink    *SyncMap  // server id -> am I recording tokens from that
-	                             // server?
+	isRecordingLink    map[string]bool // server id -> am I recording tokens from that server?
 	linksDoneRecording int
 	isDone             bool
 }
@@ -45,7 +49,8 @@ func NewServer(id string, tokens int, sim *Simulator) *Server {
 		sim,
 		make(map[string]*Link),
 		make(map[string]*Link),
-		NewSyncMap(),
+		sync.Mutex{},
+		make(map[int]*LocalSnapshotState),
 	}
 }
 
@@ -110,51 +115,64 @@ func (server *Server) HandlePacket(src string, message interface{}) {
 	// TODO: IMPLEMENT ME
 
 	switch message := message.(type) {
-		case TokenMessage:
-			server.Tokens += message.numTokens
+	case TokenMessage:
+		server.Tokens += message.numTokens
 
-			// Record message in each snapshot, if appropriate
-			server.snapshots.Range(func(key, val interface{}) bool {
-				// key = snapshot id (int), val = snapshot (LocalSnapshotState)
-				snapshot := val.(*LocalSnapshotState)
-
-				// Record if this snapshot is in progress
-				if !snapshot.isDone {
-					val, ok := snapshot.isRecordingLink.Load(src)
-					isRecording := val.(bool)
-					checkOk(ok, "Error: snapshot.isRecordingLink.Load() failed")
-					if isRecording {
-						snapshot.MsgsRecvd = append(snapshot.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
-					}
+		// Record the message in each snapshot, if appropriate
+		server.mu.Lock()
+		for _, snapshot := range server.snapshots {
+			// Record if this snapshot is in progress
+			if !snapshot.isDone {
+				snapshot.mu.Lock()
+				if snapshot.isRecordingLink[src] {
+					snapshot.MsgsRecvd = append(snapshot.MsgsRecvd, &SnapshotMessage{src, server.Id, message})
 				}
-
-				return true
-			})
-		case MarkerMessage:
-			// Get snapshot corresponding to this marker
-			snapshotId := message.snapshotId
-			val, isSnapshotStarted := server.snapshots.Load(snapshotId)
-
-			// Start snapshotting if I haven't started yet
-			if !isSnapshotStarted {
-				server.StartSnapshot(snapshotId)
+				snapshot.mu.Unlock()
 			}
+		}
+		server.mu.Unlock()
 
-			// Get snapshot again in case it was just started
-			val, ok := server.snapshots.Load(snapshotId)
-			checkOk(ok, "Error: server.snapshots.Load() failed")
-			snapshot := val.(*LocalSnapshotState)
+	case MarkerMessage:
+		// Get snapshot corresponding to this marker
+		server.mu.Lock()
+		snapshotId := message.snapshotId
+		snapshot, isSnapshotStarted := server.snapshots[snapshotId]
+		server.mu.Unlock()
+
+		// Start snapshotting if I haven't started yet
+		if !isSnapshotStarted {
+			server.StartSnapshot(snapshotId)
+		}
+
+		// Get snapshot again in case it was just started
+		server.mu.Lock()
+		snapshot, ok := server.snapshots[snapshotId]
+		server.mu.Unlock()
+
+		checkOk(ok, fmt.Sprintf("Error: retrieving snapshot %v failed", snapshotId))
+
+		// Determine whether this snapshot is done, and the return value indicates
+		// whether it's done. Do this locked for concurrency safe reads/writes.
+		done := func() bool {
+			snapshot.mu.Lock()
+			defer snapshot.mu.Unlock()
 
 			// Stop recording messages from this sender
-			snapshot.isRecordingLink.Store(src, false)
+			snapshot.isRecordingLink[src] = false
 			snapshot.linksDoneRecording++
 
 			// Stop snapshotting if I'm done recording all links, and notify
 			// simulator.
 			if !snapshot.isDone && snapshot.linksDoneRecording == len(server.inboundLinks) {
 				snapshot.isDone = true
-				server.sim.NotifySnapshotComplete(server.Id, snapshotId)
+				return true
 			}
+			return false
+		}()
+
+		if done {
+			server.sim.NotifySnapshotComplete(server.Id, snapshotId)
+		}
 	}
 }
 
@@ -166,20 +184,23 @@ func (server *Server) StartSnapshot(snapshotId int) {
 	// Record my state, and start recording state of inbound links
 	tokensInSnapshot := server.Tokens
 	msgsRecvd := make([]*SnapshotMessage, 0)
-	isRecordingLink := NewSyncMap()
+	isRecordingLink := make(map[string]bool)
 	for serverId, _ := range server.inboundLinks {
-		isRecordingLink.Store(serverId, true)
+		isRecordingLink[serverId] = true
 	}
 	linksDoneRecording := 0
 	isDone := false
 
-	server.snapshots.Store(snapshotId, &LocalSnapshotState{
+	server.mu.Lock()
+	server.snapshots[snapshotId] = &LocalSnapshotState{
+		sync.Mutex{},
 		tokensInSnapshot,
 		msgsRecvd,
 		isRecordingLink,
 		linksDoneRecording,
 		isDone,
-	})
+	}
+	server.mu.Unlock()
 
 	// Send markers out to all neighbors
 	server.SendToNeighbors(MarkerMessage{snapshotId})

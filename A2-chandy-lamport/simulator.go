@@ -1,6 +1,7 @@
 package chandy_lamport
 
 import (
+	"fmt"
 	"log"
 	"math/rand"
 )
@@ -26,13 +27,13 @@ type Simulator struct {
 	// TODO: ADD MORE FIELDS HERE
 
 	// Field for collecting global snapshot
-	snapshotStats  *SyncMap   // snapshot id -> ServerSnapshotStats
+	snapshotStats *SyncMap // snapshot id -> ServerSnapshotStats
 }
 
 // A container for the stats about each server during a snapshot
 type ServerSnapshotStats struct {
-	isDone  *SyncMap   // server id -> is that server done snapshotting?
-	                   // (chan bool, where chan will hold only 1 value)
+	isDone *SyncMap // server id -> is that server done snapshotting?
+	// (chan bool, where chan will hold only 1 value)
 }
 
 func NewSimulator() *Simulator {
@@ -176,7 +177,7 @@ func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 		checkOk(ok, "Error: serverStats.isDone.Load() failed")
 		ch := val.(chan bool)
 		if <-ch {
-			continue  // this server is done
+			continue // this server is done
 		}
 	}
 
@@ -185,9 +186,10 @@ func (sim *Simulator) CollectSnapshot(snapshotId int) *SnapshotState {
 	messagesInTransit := make([]*SnapshotMessage, 0)
 	for serverId, server := range sim.servers {
 		// Get server's local snapshot for this snapshot id
-		val, ok := server.snapshots.Load(snapshotId)
-		checkOk(ok, "Error: server.snapshots.Load() failed")
-		localSnapshot := val.(*LocalSnapshotState)
+		server.mu.Lock()
+		localSnapshot, ok := server.snapshots[snapshotId]
+		server.mu.Unlock()
+		checkOk(ok, fmt.Sprintf("Error: retrieving snapshot %v from server %v failed", snapshotId, server.Id))
 
 		// Collect num tokens in this server's local snapshot
 		tokensByServerId[serverId] = localSnapshot.Tokens

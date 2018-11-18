@@ -1,0 +1,145 @@
+#!/bin/bash
+# filter-log
+# Author: Michael Friedman
+
+# Parse command line options
+usage="$(basename $0) [-f] [-m MSG] [-t|-tv TAG1] [-t|-tv TAG2] [...] [-k|-kv KEY1] [-k|-kv KEY2] [...] [LOGFILE]"
+help_msg='Filters a log based on message content, tags, or key-value pairs. The log file
+is expected to be in the following format, one entry per line:
+
+    2018/01/01 00:00:00 msg="Grabbed lock" tags="lock,election" i=0 status=locked
+
+Filters can be regular expressions as accepted by grep, though take note that
+they act as "contains" operations (e.g. -m "hello.*world" will filter messages
+containing "hello", followed by any number of other characters, then "world").
+You can also apply multiple filters for tags and keys, and this will filter
+lines that contain all the tags and keys specified (e.g. -t "hello" -t "world"
+will filter lines that contain both tags "hello" and "world").
+
+Some examples:
+    -m "hello.*world"        filters lines with a message containing "hello", then any number of characters, then "world"
+    -t "hello" -t "world"    filters lines containing both tags "hello" and "world"
+    -t "hello\|world"        filters lines containing the tag "hello" or the tag "world"
+    -tv "hello"              filters lines that *do not* have the tag "hello"
+
+Arguments:
+    LOGFILE       Optionally specify the log file to filter. If none is provided, it will read from stdin.
+
+Options:
+    -f            Format the log to be more readable (e.g. extract message from msg="...")
+    -m MSG        Message filter
+    -t, -tv TAG   Tag filter. Adding "v" inverts the filter (does not contain TAG)
+    -k, -kv KEY   Key filter (filters on the key in a key=value pair, NOT the value). Like -t, adding "v" inverts the filter
+
+    -h, --help    Show this page'
+format=""
+msg=""
+tags=""
+tags_inv=""
+keys=""
+keys_inv=""
+args=""
+while [ $# -ne 0 ]; do
+  case "$1" in
+    -h|--help)
+      echo "$usage"
+      echo
+      echo "$help_msg"
+      exit 0
+      ;;
+    -f)
+      format=1
+      shift 1
+      ;;
+    -m)
+      msg=$2
+      shift 2
+      ;;
+    -t)
+      tags="$tags $2"
+      shift 2
+      ;;
+    -tv)
+      tags_inv="$tags_inv $2"
+      shift 2
+      ;;
+    -k)
+      keys="$keys $2"
+      shift 2
+      ;;
+    -kv)
+      keys_inv="$keys_inv $2"
+      shift 2
+      ;;
+    -*)
+      echo "$usage"
+      echo "Invalid option $1"
+      exit 1
+      ;;
+    *) # positional arg
+      args="$args $1"
+      shift 1
+      ;;
+  esac
+done
+
+eval set -- $args # set args to $1, $2, ...
+if [ $# -gt 0 ]; then
+  logfile=$1
+else
+  logfile="-"
+fi
+
+#-------------------------------------------------------------------------------
+
+# Filter
+touch /tmp/prev /tmp/next
+cat $logfile > /tmp/prev
+
+if ! [ -z "$msg" ]; then
+  grep "msg=\".*$msg.*\"" /tmp/prev > /tmp/next
+  cp /tmp/next /tmp/prev
+fi
+
+if ! [ -z "$tags" ]; then
+  for tag in $tags; do
+    grep "tags=\".*$tag.*\"" /tmp/prev > /tmp/next
+    cp /tmp/next /tmp/prev
+  done
+fi
+
+if ! [ -z "$tags_inv" ]; then
+  for tag_inv in $tags_inv; do
+    grep -v "tags=\".*$tag_inv.*\"" /tmp/prev > /tmp/next
+    cp /tmp/next /tmp/prev
+  done
+fi
+
+if ! [ -z "$keys" ]; then
+  for key in $keys; do
+    grep "$key=" /tmp/prev > /tmp/next
+    cp /tmp/next /tmp/prev
+  done
+fi
+
+if ! [ -z "$keys_inv" ]; then
+  for key_inv in $keys_inv; do
+    grep -v "$key_inv=" /tmp/prev > /tmp/next
+    cp /tmp/next /tmp/prev
+  done
+fi
+
+# Format nicer
+if ! [ -z $format ]; then
+  # Add extra space between msg and tags for easier reading, and extract
+  # internals of msg
+  sed 's/\(.*\) \(tags=.*\)/\1    \2/' /tmp/prev |
+    sed 's/msg="\([^"]*\)"\(.*\)/\1\2/' > /tmp/next
+  cp /tmp/next /tmp/prev
+fi
+
+# Print results
+cat /tmp/prev
+
+# Clean up temporary files
+rm -f /tmp/prev /tmp/next

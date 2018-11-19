@@ -19,7 +19,9 @@ package raft
 
 import (
 	"labrpc"
+	"math/rand"
 	"sync"
+	"time"
 )
 
 // import "bytes"
@@ -27,16 +29,30 @@ import (
 
 //------------------------------------------------------------------------------
 
+// Constants
+
+// State is a state of the Raft.
+type State string
+
+const (
+	Follower  State = "Follower"
+	Candidate State = "Candidate"
+	Leader    State = "Leader"
+)
+
+//------------------------------------------------------------------------------
+
 // Types
 
 // AppendEntriesArgs contains the arguments for AppendEntries.
 type AppendEntriesArgs struct {
-	// Your data here.
+	Term int
 }
 
 // AppendEntriesReply contains the reply for AppendEntries.
 type AppendEntriesReply struct {
-	// Your data here.
+	Success bool
+	Term    int
 }
 
 // as each Raft peer becomes aware that successive log entries are
@@ -51,21 +67,39 @@ type ApplyMsg struct {
 
 // Raft implements a Raft server.
 type Raft struct {
-	mu        sync.Mutex
-	peers     []*labrpc.ClientEnd
-	persister *Persister
-	me        int // index into peers[]
-
+	currentTerm int
+	mu          sync.Mutex
+	me          int // index into peers[]
+	peers       []*labrpc.ClientEnd
+	persister   *Persister
+	resetSig    chan ResetSignal
+	state       State // Follower, Candidate, or Leader
+	stepDownSig chan StepDownSignal
+	votedFor    int
 }
 
 // RequestVoteArgs contains the arguments for RequestVote.
 type RequestVoteArgs struct {
-	// Your data here.
+	CandidateID int
+	Term        int
 }
 
 // RequestVoteReply contains the reply for RequestVote.
 type RequestVoteReply struct {
-	// Your data here.
+	Term        int
+	VoteGranted bool
+}
+
+// ResetSignal represents a Reset signal.
+type ResetSignal struct {
+	currentTerm int
+	newTerm     int
+}
+
+// StepDownSignal represents a StepDown signal.
+type StepDownSignal struct {
+	currentTerm int
+	newTerm     int
 }
 
 //------------------------------------------------------------------------------
@@ -86,13 +120,186 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 // Exported functions
 
+// BeFollower runs the Follower state for a particular term. Optionally pass a
+// later term as newTerm; if there is no new term, pass -1 and we'll use the
+// current term.
+func (rf *Raft) BeFollower(newTerm int) {
+	// Set up Follower
+	rf.mu.Lock()
+	rf.state = Follower
+	if newTerm != -1 {
+		rf.currentTerm = newTerm
+		rf.votedFor = -1
+	}
+	currentTerm := rf.currentTerm
+	rf.mu.Unlock()
+
+	electionTimer := makeRandomTimer()
+
+	// Wait for signals to decide next state
+	done := false
+	for !done {
+		select {
+		case <-electionTimer.C:
+			// Transition to Candidate
+			go rf.BeCandidate()
+			done = true
+		case sig := <-rf.resetSig:
+			if sig.currentTerm != currentTerm {
+				continue
+			}
+
+			// Stop election timer and start over from beginning
+			if !electionTimer.Stop() {
+				<-electionTimer.C
+			}
+			go rf.BeFollower(sig.newTerm)
+			done = true
+		}
+	}
+}
+
+// BeCandidate runs the Candidate state for a particular term.
+func (rf *Raft) BeCandidate() {
+	// Set up Candidate
+	rf.mu.Lock()
+	rf.state = Candidate
+	rf.currentTerm++
+	currentTerm := rf.currentTerm
+	rf.votedFor = rf.me
+	numVotes := 1
+
+	// Construct args/replies for RequestVote RPCs
+	args := make([]RequestVoteArgs, len(rf.peers))
+	replies := make([]RequestVoteReply, len(rf.peers))
+	for i, _ := range rf.peers {
+		args[i] = RequestVoteArgs{i, currentTerm}
+		replies[i] = RequestVoteReply{}
+	}
+	rf.mu.Unlock()
+
+	// Send RequestVote RPCs
+	votesCh := make(chan bool, len(args))
+	for i := 0; i < len(args); i++ {
+		go func(i int) {
+			ok := rf.sendRequestVote(i, args[i], &replies[i])
+			if !ok {
+				return // ignore failed RPCs
+			}
+
+			if replies[i].Term > currentTerm {
+				rf.stepDownSig <- StepDownSignal{currentTerm, replies[i].Term}
+				return
+			}
+
+			if replies[i].VoteGranted {
+				votesCh <- true
+			}
+		}(i)
+	}
+
+	// Tally votes in the background
+	electionTimer := makeRandomTimer()
+	winSig := make(chan bool, 1)
+	go func() {
+		for i := 0; i < len(args); i++ {
+			<-votesCh
+			numVotes++
+			if numVotes == (len(args)/2)+1 {
+				winSig <- true
+			}
+		}
+	}()
+
+	// Wait for signals to decide next state
+	done := false
+	for !done {
+		select {
+		case <-winSig:
+			go rf.BeLeader()
+			done = true
+		case sig := <-rf.stepDownSig:
+			if sig.currentTerm != currentTerm {
+				continue
+			}
+
+			go rf.BeFollower(sig.newTerm)
+			done = true
+		case <-electionTimer.C:
+			// Stop election timer and start over
+			if !electionTimer.Stop() {
+				<-electionTimer.C
+			}
+			go rf.BeCandidate()
+			done = true
+		}
+	}
+}
+
+// BeLeader runs the Leader state for a particular term.
+func (rf *Raft) BeLeader() {
+	// Set up Leader
+	rf.mu.Lock()
+	rf.state = Leader
+	currentTerm := rf.currentTerm
+
+	// Construct heartbeat args/replies
+	args := make([]AppendEntriesArgs, len(rf.peers))
+	replies := make([]AppendEntriesReply, len(rf.peers))
+	for i, _ := range rf.peers {
+		args[i] = AppendEntriesArgs{currentTerm}
+		replies[i] = AppendEntriesReply{}
+	}
+	rf.mu.Unlock()
+
+	// Send a round of heartbeats
+	for i := 0; i < len(args); i++ {
+		go func(i int) {
+			ok := rf.sendAppendEntries(i, args[i], &replies[i])
+			if !ok {
+				return // ignore failed RPCs
+			}
+
+			if replies[i].Term > currentTerm {
+				rf.stepDownSig <- StepDownSignal{currentTerm, replies[i].Term}
+				return
+			}
+		}(i)
+	}
+
+	heartbeatTimer := newHeartbeatTimer()
+
+	// Wait for signals to determine next state
+	done := false
+	for !done {
+		select {
+		case sig := <-rf.stepDownSig:
+			if sig.currentTerm != currentTerm {
+				continue
+			}
+
+			go rf.BeFollower(sig.newTerm)
+			done = true
+		case <-heartbeatTimer.C:
+			go rf.BeLeader()
+			done = true
+		}
+	}
+}
+
 // GetState returns currentTerm and whether this server believes it is the
 // leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
-	var isleader bool
-	// Your code here.
-	return term, isleader
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	currentTerm := rf.currentTerm
+	isLeader := (rf.state == Leader)
+	return currentTerm, isLeader
+}
+
+// the tester calls Kill when a Raft instance won't be needed again.
+func (rf *Raft) Kill() {
+
 }
 
 // Make creates a Raft server. The ports of all the Raft servers (including
@@ -104,15 +311,23 @@ func (rf *Raft) GetState() (int, bool) {
 // start goroutines for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-
-	// Your initialization code here.
+	// Initialize
+	rf := &Raft{
+		currentTerm: -1,
+		me:          me,
+		peers:       peers,
+		persister:   persister,
+		resetSig:    make(chan ResetSignal, len(peers)),
+		state:       "",
+		stepDownSig: make(chan StepDownSignal, len(peers)),
+		votedFor:    -1,
+	}
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// Enter Follower state
+	go rf.BeFollower(0)
 
 	return rf
 }
@@ -140,14 +355,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // Private functions
 
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	// Your code here.
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+// newHeartbeatTimer returns a timer of fixed duration - the interval between
+// heartbeat messages sent by a Leader.
+func newHeartbeatTimer() *time.Timer {
+	return time.NewTimer(time.Millisecond * time.Duration(75))
 }
 
 // save Raft's persistent state to stable storage,
@@ -162,6 +373,31 @@ func (rf *Raft) persist() {
 	// e.Encode(rf.yyy)
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
+}
+
+// restore previously persisted state.
+func (rf *Raft) readPersist(data []byte) {
+	// Your code here.
+	// Example:
+	// r := bytes.NewBuffer(data)
+	// d := gob.NewDecoder(r)
+	// d.Decode(&rf.xxx)
+	// d.Decode(&rf.yyy)
+}
+
+// makeRandomTimer returns a timer of random duration.
+func makeRandomTimer() *time.Timer {
+	minMillisecs := 150
+	maxMillisecs := 300
+
+	randMillisecs := minMillisecs + rand.Intn(maxMillisecs-minMillisecs)
+	return time.NewTimer(time.Millisecond * time.Duration(randMillisecs))
+}
+
+// sendAppendEntries is a wrapper for sending an AppendEntries RPC to `server`.
+func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
 }
 
 // sendRequestVote is a wrapper for sending a RequestVote RPC to `server`.

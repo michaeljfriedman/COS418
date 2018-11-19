@@ -223,6 +223,7 @@ func (rf *Raft) BeFollower(newTerm int) {
 func (rf *Raft) BeCandidate() {
 	// Set up Candidate
 	rf.mu.Lock()
+	me := rf.me
 	rf.state = Candidate
 	rf.currentTerm++
 	currentTerm := rf.currentTerm
@@ -233,7 +234,7 @@ func (rf *Raft) BeCandidate() {
 	args := make([]RequestVoteArgs, len(rf.peers))
 	replies := make([]RequestVoteReply, len(rf.peers))
 	for i, _ := range rf.peers {
-		args[i] = RequestVoteArgs{i, currentTerm}
+		args[i] = RequestVoteArgs{me, currentTerm}
 		replies[i] = RequestVoteReply{}
 	}
 	rf.mu.Unlock()
@@ -241,6 +242,10 @@ func (rf *Raft) BeCandidate() {
 	// Send RequestVote RPCs
 	votesCh := make(chan bool, len(args))
 	for i := 0; i < len(args); i++ {
+		if i == me {
+			continue
+		}
+
 		go func(i int) {
 			ok := rf.sendRequestVote(i, args[i], &replies[i])
 			if !ok {
@@ -300,6 +305,7 @@ func (rf *Raft) BeCandidate() {
 func (rf *Raft) BeLeader() {
 	// Set up Leader
 	rf.mu.Lock()
+	me := rf.me
 	rf.state = Leader
 	currentTerm := rf.currentTerm
 
@@ -314,6 +320,10 @@ func (rf *Raft) BeLeader() {
 
 	// Send a round of heartbeats
 	for i := 0; i < len(args); i++ {
+		if i == me {
+			continue
+		}
+
 		go func(i int) {
 			ok := rf.sendAppendEntries(i, args[i], &replies[i])
 			if !ok {

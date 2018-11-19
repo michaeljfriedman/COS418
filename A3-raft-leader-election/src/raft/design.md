@@ -89,3 +89,28 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
 [3] If you get a delayed RV reply with term > my term after you've already won the election, how to send Step Down signal to your leader channel?
 
   - Step Down channel will be shared (global) between Candidate and Leader. (Because of [2], this shouldn’t violate correctness.)
+
+## Logging
+
+- Tags:
+  - `lock`: Anywhere a lock is obtained or returned
+  - `follower`, `candidate`, `leader`: Anywhere pertaining to that state (e.g. in the state handler, in branches for that state elsewhere)
+  - `heartbeat`: Where heartbeats are sent by the leader
+  - `newState`: Where a server enters a new state
+  - `signal`: Where signals are sent/received
+
+- In general, in every function, log every path of execution, at notable points
+
+- State Handlers
+  - Upon changing to each state (beg of state handler)
+  - Upon sending or receiving a signal
+  - Candidate
+    - Before sending each RV
+    - When a RV response is received
+  - Leader
+    - Before sending each heartbeat
+
+- RPC Handlers
+  - Upon sending a signal
+  - Upon returning, indicating which execution path was taken
+    - e.g. In RequestVote, log if you take the "vote granted" path, and also if a signal is sent (separately)

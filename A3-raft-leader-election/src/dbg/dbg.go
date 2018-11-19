@@ -21,6 +21,26 @@ func LogKVs(msg string, tags []string, kvs map[string]interface{}) {
 	log.Printf("msg=\"%v\" tags=\"%v\" %v", msg, formatTags(tags), formatKVs(kvs))
 }
 
+// LogIf prints a message based on the conditional. Pass the empty string for
+// either message to print nothing in that case.
+func LogIf(conditional bool, msgIfTrue string, msgIfFalse string, tags []string) {
+	if conditional && msgIfTrue != "" {
+		Log(msgIfTrue, tags)
+	} else if !conditional && msgIfFalse != "" {
+		Log(msgIfFalse, tags)
+	}
+}
+
+// LogKVsIf is analogous to LogIf, but for LogKVs.
+func LogKVsIf(conditional bool, msgIfTrue string, msgIfFalse string,
+	tags []string, kvs map[string]interface{}) {
+	if conditional && msgIfTrue != "" {
+		LogKVs(msgIfTrue, tags, kvs)
+	} else if !conditional && msgIfFalse != "" {
+		LogKVs(msgIfFalse, tags, kvs)
+	}
+}
+
 // formatTags formats the tags array into a string comma-separated list.
 func formatTags(tags []string) string {
 	if tags == nil {

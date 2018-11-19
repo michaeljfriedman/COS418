@@ -18,6 +18,7 @@ package raft
 //
 
 import (
+	"dbg"
 	"labrpc"
 	"math/rand"
 	"sync"
@@ -38,6 +39,17 @@ const (
 	Follower  State = "Follower"
 	Candidate State = "Candidate"
 	Leader    State = "Leader"
+)
+
+// Log tags
+const (
+	tagCandidate = "candidate"
+	tagFollower  = "follower"
+	tagHeartbeat = "heartbeat"
+	tagLeader    = "leader"
+	tagLock      = "lock"
+	tagNewState  = "newState"
+	tagSignal    = "signal"
 )
 
 //------------------------------------------------------------------------------
@@ -244,6 +256,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 // current term.
 func (rf *Raft) beFollower(newTerm int) {
 	// Set up Follower
+	dbg.LogKVs("Grabbing lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
 	rf.state = Follower
 	if newTerm != -1 {
@@ -251,7 +264,10 @@ func (rf *Raft) beFollower(newTerm int) {
 		rf.votedFor = -1
 	}
 	currentTerm := rf.currentTerm
+	dbg.LogKVs("Returning lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Unlock()
+
+	dbg.LogKVsIf(newTerm != -1, "Entered Follower state in a new term", "Re-entered Follower state in same term", []string{tagFollower, tagNewState}, map[string]interface{}{"rf": rf})
 
 	electionTimer := makeRandomTimer()
 
@@ -260,13 +276,16 @@ func (rf *Raft) beFollower(newTerm int) {
 	for !done {
 		select {
 		case <-electionTimer.C:
+			dbg.LogKVs("Election timer timed out", []string{tagFollower, tagSignal}, map[string]interface{}{"rf": rf})
 			go rf.beCandidate()
 			done = true
 		case sig := <-rf.resetSig:
 			if sig.currentTerm != currentTerm {
+				dbg.LogKVs("Received Reset signal, ignoring because term is wrong", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
+			dbg.LogKVs("Received Reset signal, valid", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}
@@ -279,6 +298,7 @@ func (rf *Raft) beFollower(newTerm int) {
 // beCandidate runs the Candidate state for a particular term.
 func (rf *Raft) beCandidate() {
 	// Set up Candidate
+	dbg.LogKVs("Grabbing lock", []string{tagCandidate, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
 	me := rf.me
 	rf.state = Candidate
@@ -294,7 +314,10 @@ func (rf *Raft) beCandidate() {
 		args[i] = RequestVoteArgs{me, currentTerm}
 		replies[i] = RequestVoteReply{}
 	}
+	dbg.LogKVs("Returning lock", []string{tagCandidate, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Unlock()
+
+	dbg.LogKVs("Entered Candidate state", []string{tagCandidate, tagNewState}, map[string]interface{}{"rf": rf})
 
 	// Send RequestVote RPCs
 	votesCh := make(chan bool, len(args))
@@ -304,17 +327,21 @@ func (rf *Raft) beCandidate() {
 		}
 
 		go func(i int) {
+			dbg.LogKVs("Sending RequestVote", []string{tagCandidate}, map[string]interface{}{"i": i, "args[i]": args[i], "rf": rf})
 			ok := rf.sendRequestVote(i, args[i], &replies[i])
 			if !ok {
 				return // ignore failed RPCs
 			}
 
 			if replies[i].Term > currentTerm {
-				rf.stepDownSig <- StepDownSignal{currentTerm, replies[i].Term}
+				sig := StepDownSignal{currentTerm, replies[i].Term}
+				dbg.LogKVs("Sending Step Down signal", []string{tagCandidate, tagSignal}, map[string]interface{}{"rf": rf, "sig": sig})
+				rf.stepDownSig <- sig
 				return
 			}
 
 			if replies[i].VoteGranted {
+				dbg.LogKVs("Got RequestVote reply", []string{tagCandidate}, map[string]interface{}{"i": i, "replies[i]": replies[i], "rf": rf})
 				votesCh <- true
 			}
 		}(i)
@@ -328,6 +355,7 @@ func (rf *Raft) beCandidate() {
 			<-votesCh
 			numVotes++
 			if numVotes == (len(args)/2)+1 {
+				dbg.LogKVs("Sending Win signal", []string{tagCandidate, tagSignal}, map[string]interface{}{"numVotes": numVotes, "rf": rf})
 				winSig <- true
 			}
 		}
@@ -338,16 +366,20 @@ func (rf *Raft) beCandidate() {
 	for !done {
 		select {
 		case <-winSig:
+			dbg.LogKVs("Received Win signal", []string{tagCandidate, tagSignal}, map[string]interface{}{"rf": rf})
 			go rf.beLeader()
 			done = true
 		case sig := <-rf.stepDownSig:
 			if sig.currentTerm != currentTerm {
+				dbg.LogKVs("Received Step Down signal, ignoring because term is wrong", []string{tagCandidate, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
+			dbg.LogKVs("Received Step Down signal, valid", []string{tagCandidate, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 			go rf.beFollower(sig.newTerm)
 			done = true
 		case <-electionTimer.C:
+			dbg.LogKVs("Election timer timed out", []string{tagCandidate, tagSignal}, map[string]interface{}{"rf": rf})
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}
@@ -360,6 +392,7 @@ func (rf *Raft) beCandidate() {
 // beLeader runs the Leader state for a particular term.
 func (rf *Raft) beLeader() {
 	// Set up Leader
+	dbg.LogKVs("Grabbing lock", []string{tagCandidate, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
 	me := rf.me
 	rf.state = Leader
@@ -372,7 +405,10 @@ func (rf *Raft) beLeader() {
 		args[i] = AppendEntriesArgs{currentTerm}
 		replies[i] = AppendEntriesReply{}
 	}
+	dbg.LogKVs("Returning lock", []string{tagCandidate, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Unlock()
+
+	dbg.LogKVs("Entered Leader state", []string{tagLeader, tagNewState}, map[string]interface{}{"rf": rf})
 
 	// Send a round of heartbeats
 	for i := 0; i < len(args); i++ {
@@ -381,13 +417,16 @@ func (rf *Raft) beLeader() {
 		}
 
 		go func(i int) {
+			dbg.LogKVs("Sending heartbeat", []string{tagLeader, tagHeartbeat}, map[string]interface{}{"i": i, "args[i]": args[i], "rf": rf})
 			ok := rf.sendAppendEntries(i, args[i], &replies[i])
 			if !ok {
 				return // ignore failed RPCs
 			}
 
 			if replies[i].Term > currentTerm {
-				rf.stepDownSig <- StepDownSignal{currentTerm, replies[i].Term}
+				sig := StepDownSignal{currentTerm, replies[i].Term}
+				dbg.LogKVs("Sending Step Down signal", []string{tagLeader, tagSignal}, map[string]interface{}{"rf": rf, "sig": sig})
+				rf.stepDownSig <- sig
 				return
 			}
 		}(i)
@@ -401,12 +440,15 @@ func (rf *Raft) beLeader() {
 		select {
 		case sig := <-rf.stepDownSig:
 			if sig.currentTerm != currentTerm {
+				dbg.LogKVs("Received Step Down signal, ignoring because term is wrong", []string{tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
+			dbg.LogKVs("Received Step Down signal, valid", []string{tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 			go rf.beFollower(sig.newTerm)
 			done = true
 		case <-heartbeatTimer.C:
+			dbg.LogKVs("Heartbeat timer timed out", []string{tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
 			go rf.beLeader()
 			done = true
 		}

@@ -170,10 +170,79 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 
 // Exported functions
 
-// BeFollower runs the Follower state for a particular term. Optionally pass a
+// GetState returns currentTerm and whether this server believes it is the
+// leader.
+func (rf *Raft) GetState() (int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	currentTerm := rf.currentTerm
+	isLeader := (rf.state == Leader)
+	return currentTerm, isLeader
+}
+
+// the tester calls Kill when a Raft instance won't be needed again.
+func (rf *Raft) Kill() {
+
+}
+
+// Make creates a Raft server. The ports of all the Raft servers (including
+// this one) are in peers[]. This server's port is peers[me]. All the servers'
+// peers[] arrays have the same order. persister is a place for this server to
+// save its persistent state, and also initially holds the most recent saved
+// state, if any. applyCh is a channel on which the tester or service expects
+// Raft to send ApplyMsg messages. Make must return quickly, so it should
+// start goroutines for any long-running work.
+func Make(peers []*labrpc.ClientEnd, me int,
+	persister *Persister, applyCh chan ApplyMsg) *Raft {
+	// Initialize
+	rf := &Raft{
+		currentTerm: -1,
+		me:          me,
+		peers:       peers,
+		persister:   persister,
+		resetSig:    make(chan ResetSignal, len(peers)),
+		state:       "",
+		stepDownSig: make(chan StepDownSignal, len(peers)),
+		votedFor:    -1,
+	}
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
+	// Enter Follower state
+	go rf.beFollower(0)
+
+	return rf
+}
+
+// the service using Raft (e.g. a k/v server) wants to start
+// agreement on the next command to be appended to Raft's log. if this
+// server isn't the leader, returns false. otherwise start the
+// agreement and return immediately. there is no guarantee that this
+// command will ever be committed to the Raft log, since the leader
+// may fail or lose an election.
+//
+// the first return value is the index that the command will appear at
+// if it's ever committed. the second return value is the current
+// term. the third return value is true if this server believes it is
+// the leader.
+func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	index := -1
+	currentTerm := rf.currentTerm
+	isLeader := (rf.state == Leader)
+	return index, currentTerm, isLeader
+}
+
+//------------------------------------------------------------------------------
+
+// Private functions
+
+// beFollower runs the Follower state for a particular term. Optionally pass a
 // later term as newTerm; if there is no new term, pass -1 and we'll use the
 // current term.
-func (rf *Raft) BeFollower(newTerm int) {
+func (rf *Raft) beFollower(newTerm int) {
 	// Set up Follower
 	rf.mu.Lock()
 	rf.state = Follower
@@ -191,7 +260,7 @@ func (rf *Raft) BeFollower(newTerm int) {
 	for !done {
 		select {
 		case <-electionTimer.C:
-			go rf.BeCandidate()
+			go rf.beCandidate()
 			done = true
 		case sig := <-rf.resetSig:
 			if sig.currentTerm != currentTerm {
@@ -201,14 +270,14 @@ func (rf *Raft) BeFollower(newTerm int) {
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}
-			go rf.BeFollower(sig.newTerm)
+			go rf.beFollower(sig.newTerm)
 			done = true
 		}
 	}
 }
 
-// BeCandidate runs the Candidate state for a particular term.
-func (rf *Raft) BeCandidate() {
+// beCandidate runs the Candidate state for a particular term.
+func (rf *Raft) beCandidate() {
 	// Set up Candidate
 	rf.mu.Lock()
 	me := rf.me
@@ -269,27 +338,27 @@ func (rf *Raft) BeCandidate() {
 	for !done {
 		select {
 		case <-winSig:
-			go rf.BeLeader()
+			go rf.beLeader()
 			done = true
 		case sig := <-rf.stepDownSig:
 			if sig.currentTerm != currentTerm {
 				continue
 			}
 
-			go rf.BeFollower(sig.newTerm)
+			go rf.beFollower(sig.newTerm)
 			done = true
 		case <-electionTimer.C:
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}
-			go rf.BeCandidate()
+			go rf.beCandidate()
 			done = true
 		}
 	}
 }
 
-// BeLeader runs the Leader state for a particular term.
-func (rf *Raft) BeLeader() {
+// beLeader runs the Leader state for a particular term.
+func (rf *Raft) beLeader() {
 	// Set up Leader
 	rf.mu.Lock()
 	me := rf.me
@@ -335,83 +404,14 @@ func (rf *Raft) BeLeader() {
 				continue
 			}
 
-			go rf.BeFollower(sig.newTerm)
+			go rf.beFollower(sig.newTerm)
 			done = true
 		case <-heartbeatTimer.C:
-			go rf.BeLeader()
+			go rf.beLeader()
 			done = true
 		}
 	}
 }
-
-// GetState returns currentTerm and whether this server believes it is the
-// leader.
-func (rf *Raft) GetState() (int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	currentTerm := rf.currentTerm
-	isLeader := (rf.state == Leader)
-	return currentTerm, isLeader
-}
-
-// the tester calls Kill when a Raft instance won't be needed again.
-func (rf *Raft) Kill() {
-
-}
-
-// Make creates a Raft server. The ports of all the Raft servers (including
-// this one) are in peers[]. This server's port is peers[me]. All the servers'
-// peers[] arrays have the same order. persister is a place for this server to
-// save its persistent state, and also initially holds the most recent saved
-// state, if any. applyCh is a channel on which the tester or service expects
-// Raft to send ApplyMsg messages. Make must return quickly, so it should
-// start goroutines for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	// Initialize
-	rf := &Raft{
-		currentTerm: -1,
-		me:          me,
-		peers:       peers,
-		persister:   persister,
-		resetSig:    make(chan ResetSignal, len(peers)),
-		state:       "",
-		stepDownSig: make(chan StepDownSignal, len(peers)),
-		votedFor:    -1,
-	}
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
-
-	// Enter Follower state
-	go rf.BeFollower(0)
-
-	return rf
-}
-
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election.
-//
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-	index := -1
-	currentTerm := rf.currentTerm
-	isLeader := (rf.state == Leader)
-	return index, currentTerm, isLeader
-}
-
-//------------------------------------------------------------------------------
-
-// Private functions
 
 // newHeartbeatTimer returns a timer of fixed duration - the interval between
 // heartbeat messages sent by a Leader.

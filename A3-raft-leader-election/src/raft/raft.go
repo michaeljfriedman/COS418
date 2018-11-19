@@ -111,38 +111,29 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	// Always send back my term
 	reply.Term = rf.currentTerm
-
 	if args.Term < rf.currentTerm {
-		// Invalid message - reject
 		reply.Success = false
 		return
 	}
-
-	// Valid message
 	reply.Success = true
 
+	// Decide how to signal based on state
 	switch rf.state {
 	case Follower:
 		if args.Term > rf.currentTerm {
-			// Signal to reset and update my term
 			rf.resetSig <- ResetSignal{rf.currentTerm, args.Term}
 		} else {
-			// Signal to just reset in this term
 			rf.resetSig <- ResetSignal{rf.currentTerm, -1}
 		}
 	case Candidate:
 		if args.Term > rf.currentTerm {
-			// Signal to step down because my term is outdated
 			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
 		} else {
-			// Signal to step down because I lost in this term
 			rf.stepDownSig <- StepDownSignal{rf.currentTerm, -1}
 		}
 	case Leader:
 		if args.Term > rf.currentTerm {
-			// Signal to step down because there's a new term (and thus a new leader)
 			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
 		}
 	}
@@ -158,7 +149,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	reply.VoteGranted = false
 
 	if args.Term < rf.currentTerm {
-		// Invalid message - reject
 		return
 	}
 
@@ -168,9 +158,9 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.votedFor = args.CandidateID
 	}
 
+	// Possibly signal based on term and state
 	if args.Term > rf.currentTerm {
 		if rf.state == Candidate || rf.state == Leader {
-			// Signal to step down because my term is outdated
 			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
 		}
 	}
@@ -201,7 +191,6 @@ func (rf *Raft) BeFollower(newTerm int) {
 	for !done {
 		select {
 		case <-electionTimer.C:
-			// Transition to Candidate
 			go rf.BeCandidate()
 			done = true
 		case sig := <-rf.resetSig:
@@ -209,7 +198,6 @@ func (rf *Raft) BeFollower(newTerm int) {
 				continue
 			}
 
-			// Stop election timer and start over from beginning
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}
@@ -291,7 +279,6 @@ func (rf *Raft) BeCandidate() {
 			go rf.BeFollower(sig.newTerm)
 			done = true
 		case <-electionTimer.C:
-			// Stop election timer and start over
 			if !electionTimer.Stop() {
 				<-electionTimer.C
 			}

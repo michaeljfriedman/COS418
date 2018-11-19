@@ -108,12 +108,72 @@ type StepDownSignal struct {
 
 // AppendEntries is the handler for receiving a AppendEntries RPC.
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
-	// Your code here.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Always send back my term
+	reply.Term = rf.currentTerm
+
+	if args.Term < rf.currentTerm {
+		// Invalid message - reject
+		reply.Success = false
+		return
+	}
+
+	// Valid message
+	reply.Success = true
+
+	switch rf.state {
+	case Follower:
+		if args.Term > rf.currentTerm {
+			// Signal to reset and update my term
+			rf.resetSig <- ResetSignal{rf.currentTerm, args.Term}
+		} else {
+			// Signal to just reset in this term
+			rf.resetSig <- ResetSignal{rf.currentTerm, -1}
+		}
+	case Candidate:
+		if args.Term > rf.currentTerm {
+			// Signal to step down because my term is outdated
+			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+		} else {
+			// Signal to step down because I lost in this term
+			rf.stepDownSig <- StepDownSignal{rf.currentTerm, -1}
+		}
+	case Leader:
+		if args.Term > rf.currentTerm {
+			// Signal to step down because there's a new term (and thus a new leader)
+			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+		}
+	}
 }
 
 // RequestVote is the handler for receiving a RequestVote RPC.
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here.
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	// Always send back my term, and default to not voting
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = false
+
+	if args.Term < rf.currentTerm {
+		// Invalid message - reject
+		return
+	}
+
+	// Grant vote if I haven't voted yet (or if it's a retry from same candidate)
+	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateID
+	}
+
+	if args.Term > rf.currentTerm {
+		if rf.state == Candidate || rf.state == Leader {
+			// Signal to step down because my term is outdated
+			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+		}
+	}
 }
 
 //------------------------------------------------------------------------------
@@ -344,11 +404,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
-	term := -1
-	isLeader := true
-
-	return index, term, isLeader
+	currentTerm := rf.currentTerm
+	isLeader := (rf.state == Leader)
+	return index, currentTerm, isLeader
 }
 
 //------------------------------------------------------------------------------

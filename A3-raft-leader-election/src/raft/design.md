@@ -81,9 +81,9 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
 
 [1] Since AE/RV handler can depend on my term at any time, make sure to lock around usage of the term everywhere
 
-[2] Must make sure signal channels for a state are emptied before the next time you return to a state, otherwise you could get signals from last time you were in this state – e.g. In Candidate, if you get a RV reply with term > my term, you'll send signal Step Down. But processing the reply happens in the bg, so if this happens after you already won, that signal will sit on the channel even after you left the Candidate state.
+[2] Must make sure signal channels for a state are "emptied" before the next time you return to a state, otherwise you could get signals from last time you were in this state – e.g. In Candidate, if you get a RV reply with term > my term, you'll send signal Step Down. But processing the reply is concurrent with processing votes/determining if you won, so if this happens after you already won, that signal will sit on the channel even after you left the Candidate state.
 
-  - **Solution**: Send the term as the signal, and only process the signal if its term matches your term (for that "instance" of the state).
+  - **Solution**: Send your term in the signal, and only process the signal if its term matches your term (for that "instance" of the state).
     - e.g. In Candidate, save your term in a local var – this will be the term for that instance of Candidate. When it's time to send a signal, the term it applies to is sent. Then when it's received, the Candidate handler checks that the term matches its local term before processing, otherwise it'll ignore it and keep waiting for another signal.
 
 [3] If you get a delayed RV reply with term > my term after you've already won the election, how to send Step Down signal to your leader channel?

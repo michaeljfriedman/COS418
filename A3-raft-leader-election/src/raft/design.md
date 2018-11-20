@@ -93,11 +93,16 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
 ## Logging
 
 - Tags:
-  - `lock`: Anywhere a lock is obtained or returned
+  - `appendEntries`: Anywhere in the AppendEntries handler
   - `follower`, `candidate`, `leader`: Anywhere pertaining to that state (e.g. in the state handler, in branches for that state elsewhere)
+  - `getState`: Anywhere in GetState()
+  - `lock`: Anywhere a lock is obtained or returned
+  - `make`: Anywhere in Make()
   - `heartbeat`: Where heartbeats are sent by the leader
   - `newState`: Where a server enters a new state
+  - `requestVote`: Anywhere in the RequestVote handler
   - `signal`: Where signals are sent/received
+  - `start`: Anywhere in Start()
 
 - In general, in every function, log every path of execution, at notable points
 

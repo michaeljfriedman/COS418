@@ -43,13 +43,18 @@ const (
 
 // Log tags
 const (
-	tagCandidate = "candidate"
-	tagFollower  = "follower"
-	tagHeartbeat = "heartbeat"
-	tagLeader    = "leader"
-	tagLock      = "lock"
-	tagNewState  = "newState"
-	tagSignal    = "signal"
+	tagAppendEntries = "appendEntries"
+	tagCandidate     = "candidate"
+	tagFollower      = "follower"
+	tagGetState      = "getState"
+	tagHeartbeat     = "heartbeat"
+	tagLeader        = "leader"
+	tagLock          = "lock"
+	tagMake          = "make"
+	tagNewState      = "newState"
+	tagRequestVote   = "requestVote"
+	tagSignal        = "signal"
+	tagStart         = "start"
 )
 
 //------------------------------------------------------------------------------
@@ -120,12 +125,17 @@ type StepDownSignal struct {
 
 // AppendEntries is the handler for receiving a AppendEntries RPC.
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
+	dbg.LogKVs("Grabbing lock", []string{tagAppendEntries, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		dbg.LogKVs("Returning lock", []string{tagAppendEntries, tagLock}, map[string]interface{}{"rf": rf})
+		rf.mu.Unlock()
+	}()
 
 	reply.Term = rf.currentTerm
 	if args.Term < rf.currentTerm {
 		reply.Success = false
+		dbg.LogKVs("Rejecting invalid AppendEntries", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
 	reply.Success = true
@@ -134,33 +144,48 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	switch rf.state {
 	case Follower:
 		if args.Term > rf.currentTerm {
-			rf.resetSig <- ResetSignal{rf.currentTerm, args.Term}
+			sig := ResetSignal{rf.currentTerm, args.Term}
+			dbg.LogKVs("Sending Reset signal", []string{tagAppendEntries, tagFollower}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.resetSig <- sig
 		} else {
-			rf.resetSig <- ResetSignal{rf.currentTerm, -1}
+			sig := ResetSignal{rf.currentTerm, -1}
+			dbg.LogKVs("Sending Reset signal", []string{tagAppendEntries, tagFollower}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.resetSig <- sig
 		}
 	case Candidate:
 		if args.Term > rf.currentTerm {
-			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+			sig := StepDownSignal{rf.currentTerm, args.Term}
+			dbg.LogKVs("Sending Step Down signal", []string{tagAppendEntries, tagCandidate}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.stepDownSig <- sig
 		} else {
-			rf.stepDownSig <- StepDownSignal{rf.currentTerm, -1}
+			sig := StepDownSignal{rf.currentTerm, -1}
+			dbg.LogKVs("Sending Step Down signal", []string{tagAppendEntries, tagCandidate}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.stepDownSig <- sig
 		}
 	case Leader:
 		if args.Term > rf.currentTerm {
-			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+			sig := StepDownSignal{rf.currentTerm, args.Term}
+			dbg.LogKVs("Sending Step Down signal", []string{tagAppendEntries, tagLeader}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.stepDownSig <- sig
 		}
 	}
 }
 
 // RequestVote is the handler for receiving a RequestVote RPC.
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
+	dbg.LogKVs("Grabbing lock", []string{tagRequestVote, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		dbg.LogKVs("Returning lock", []string{tagRequestVote, tagLock}, map[string]interface{}{"rf": rf})
+		rf.mu.Unlock()
+	}()
 
 	// Always send back my term, and default to not voting
 	reply.Term = rf.currentTerm
 	reply.VoteGranted = false
 
 	if args.Term < rf.currentTerm {
+		dbg.LogKVs("Rejecting invalid RequestVote", []string{tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
 
@@ -168,12 +193,20 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
+		dbg.LogKVs("Granting vote", []string{tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	}
 
 	// Possibly signal based on term and state
 	if args.Term > rf.currentTerm {
-		if rf.state == Candidate || rf.state == Leader {
-			rf.stepDownSig <- StepDownSignal{rf.currentTerm, args.Term}
+		switch rf.state {
+		case Candidate:
+			sig := StepDownSignal{rf.currentTerm, args.Term}
+			dbg.LogKVs("Sending Step Down signal", []string{tagCandidate, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.stepDownSig <- sig
+		case Leader:
+			sig := StepDownSignal{rf.currentTerm, args.Term}
+			dbg.LogKVs("Sending Step Down signal", []string{tagLeader, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
+			rf.stepDownSig <- sig
 		}
 	}
 }
@@ -185,10 +218,16 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // GetState returns currentTerm and whether this server believes it is the
 // leader.
 func (rf *Raft) GetState() (int, bool) {
+	dbg.LogKVs("Grabbing lock", []string{tagGetState, tagLock}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		dbg.LogKVs("Returning lock", []string{tagGetState, tagLock}, map[string]interface{}{"rf": rf})
+		rf.mu.Unlock()
+	}()
+
 	currentTerm := rf.currentTerm
 	isLeader := (rf.state == Leader)
+	dbg.LogKVs("Returning state", []string{tagGetState}, map[string]interface{}{"rf": rf})
 	return currentTerm, isLeader
 }
 
@@ -222,6 +261,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// Enter Follower state
+	dbg.LogKVs("Initialized Raft server", []string{tagStart}, map[string]interface{}{"rf": rf})
 	go rf.beFollower(0)
 
 	return rf
@@ -239,11 +279,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	dbg.LogKVs("Grabbing lock", []string{tagLock, tagStart}, map[string]interface{}{"rf": rf})
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		dbg.LogKVs("Grabbing lock", []string{tagLock, tagStart}, map[string]interface{}{"rf": rf})
+		rf.mu.Unlock()
+	}()
+
 	index := -1
 	currentTerm := rf.currentTerm
 	isLeader := (rf.state == Leader)
+	dbg.LogKVsIf(isLeader, "Starting command", "Rejecting command because not leader", []string{tagStart}, map[string]interface{}{"index": index, "rf": rf})
 	return index, currentTerm, isLeader
 }
 

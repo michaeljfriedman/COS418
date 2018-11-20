@@ -193,7 +193,6 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor == -1 || rf.votedFor == args.CandidateID {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateID
-		dbg.LogKVs("Granting vote", []string{tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	}
 
 	// Possibly signal based on term and state
@@ -209,6 +208,8 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 			rf.stepDownSig <- sig
 		}
 	}
+
+	dbg.LogKVsIf(reply.VoteGranted, "Granting vote", "Denying vote", []string{tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 }
 
 //------------------------------------------------------------------------------
@@ -261,7 +262,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// Enter Follower state
-	dbg.LogKVs("Initialized Raft server", []string{tagStart}, map[string]interface{}{"rf": rf})
+	dbg.LogKVs("Initialized Raft server", []string{tagMake}, map[string]interface{}{"rf": rf})
 	go rf.beFollower(0)
 
 	return rf
@@ -382,9 +383,6 @@ func (rf *Raft) beCandidate() {
 			done = true
 		case <-electionTimer.C:
 			dbg.LogKVs("Election timer timed out", []string{tagCandidate, tagSignal}, map[string]interface{}{"rf": rf})
-			if !electionTimer.Stop() {
-				<-electionTimer.C
-			}
 			go rf.beCandidate()
 			done = true
 		}
@@ -494,7 +492,7 @@ func (rf *Raft) beLeader() {
 			go rf.beFollower(sig.newTerm)
 			done = true
 		case <-heartbeatTimer.C:
-			dbg.LogKVs("Heartbeat timer timed out", []string{tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
+			dbg.LogKVs("Heartbeat timer timed out", []string{tagHeartbeat, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
 			go rf.beLeader()
 			done = true
 		}

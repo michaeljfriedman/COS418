@@ -251,50 +251,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // Private functions
 
-// beFollower runs the Follower state for a particular term. Optionally pass a
-// later term as newTerm; if there is no new term, pass -1 and we'll use the
-// current term.
-func (rf *Raft) beFollower(newTerm int) {
-	// Set up Follower
-	dbg.LogKVs("Grabbing lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
-	rf.mu.Lock()
-	rf.state = Follower
-	if newTerm != -1 {
-		rf.currentTerm = newTerm
-		rf.votedFor = -1
-	}
-	currentTerm := rf.currentTerm
-	dbg.LogKVs("Returning lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
-	rf.mu.Unlock()
-
-	dbg.LogKVsIf(newTerm != -1, "Entered Follower state in a new term", "Re-entered Follower state in same term", []string{tagFollower, tagNewState}, map[string]interface{}{"rf": rf})
-
-	electionTimer := makeRandomTimer()
-
-	// Wait for signals to decide next state
-	done := false
-	for !done {
-		select {
-		case <-electionTimer.C:
-			dbg.LogKVs("Election timer timed out", []string{tagFollower, tagSignal}, map[string]interface{}{"rf": rf})
-			go rf.beCandidate()
-			done = true
-		case sig := <-rf.resetSig:
-			if sig.currentTerm != currentTerm {
-				dbg.LogKVs("Received Reset signal, ignoring because term is wrong", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-				continue
-			}
-
-			dbg.LogKVs("Received Reset signal, valid", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-			if !electionTimer.Stop() {
-				<-electionTimer.C
-			}
-			go rf.beFollower(sig.newTerm)
-			done = true
-		}
-	}
-}
-
 // beCandidate runs the Candidate state for a particular term.
 func (rf *Raft) beCandidate() {
 	// Set up Candidate
@@ -384,6 +340,50 @@ func (rf *Raft) beCandidate() {
 				<-electionTimer.C
 			}
 			go rf.beCandidate()
+			done = true
+		}
+	}
+}
+
+// beFollower runs the Follower state for a particular term. Optionally pass a
+// later term as newTerm; if there is no new term, pass -1 and we'll use the
+// current term.
+func (rf *Raft) beFollower(newTerm int) {
+	// Set up Follower
+	dbg.LogKVs("Grabbing lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
+	rf.mu.Lock()
+	rf.state = Follower
+	if newTerm != -1 {
+		rf.currentTerm = newTerm
+		rf.votedFor = -1
+	}
+	currentTerm := rf.currentTerm
+	dbg.LogKVs("Returning lock", []string{tagFollower, tagLock}, map[string]interface{}{"rf": rf})
+	rf.mu.Unlock()
+
+	dbg.LogKVsIf(newTerm != -1, "Entered Follower state in a new term", "Re-entered Follower state in same term", []string{tagFollower, tagNewState}, map[string]interface{}{"rf": rf})
+
+	electionTimer := makeRandomTimer()
+
+	// Wait for signals to decide next state
+	done := false
+	for !done {
+		select {
+		case <-electionTimer.C:
+			dbg.LogKVs("Election timer timed out", []string{tagFollower, tagSignal}, map[string]interface{}{"rf": rf})
+			go rf.beCandidate()
+			done = true
+		case sig := <-rf.resetSig:
+			if sig.currentTerm != currentTerm {
+				dbg.LogKVs("Received Reset signal, ignoring because term is wrong", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+				continue
+			}
+
+			dbg.LogKVs("Received Reset signal, valid", []string{tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+			if !electionTimer.Stop() {
+				<-electionTimer.C
+			}
+			go rf.beFollower(sig.newTerm)
 			done = true
 		}
 	}

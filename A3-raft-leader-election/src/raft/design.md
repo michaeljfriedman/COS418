@@ -92,19 +92,17 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
 
 ## Logging
 
+- Where to log: in every function, every path of execution, at notable points
+- What to log: a meaningful message indicating what has happened or is about to happen in this path, variable values relevant to that path, and relevant tags (see below)
 - Tags:
-  - `appendEntries`: Anywhere in the AppendEntries handler
-  - `follower`, `candidate`, `leader`: Anywhere pertaining to that state (e.g. in the state handler, in branches for that state elsewhere)
-  - `getState`: Anywhere in GetState()
-  - `lock`: Anywhere a lock is obtained or returned
-  - `make`: Anywhere in Make()
-  - `heartbeat`: Where heartbeats are sent by the leader
-  - `newState`: Where a server enters a new state
-  - `requestVote`: Anywhere in the RequestVote handler
-  - `signal`: Where signals are sent/received
-  - `start`: Anywhere in Start()
-
-- In general, in every function, log every path of execution, at notable points
+  - One per function, to indicate what function we're in
+  - Categories:
+    - `election`: Anywhere pertaining to the election process
+    - `follower`, `candidate`, `leader`: Anywhere pertaining to that state (e.g. in the state handler, in branches for that state elsewhere)
+    - `inactivity`: Anywhere the protocol is "inactive" (just sending/receiving empty heartbeats)
+    - `lock`: Anywhere a lock is obtained or returned
+    - `newState`: Where a server enters a new state
+    - `signal`: Where signals are sent/received
 
 - State Handlers
   - Upon changing to each state (beg of state handler)

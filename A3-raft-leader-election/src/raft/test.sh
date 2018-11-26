@@ -57,9 +57,10 @@ run_test() {
 
   # Run test
   go test -run $test > $outfile 2> $errfile
+  test_status=$?
 
   # Check for failures and warnings
-  if grep "FAIL" $outfile > /dev/null 2> /dev/null || grep "FAIL" $errfile > /dev/null 2> /dev/null; then
+  if [ $test_status -ne 0 ] || grep "FAIL" $outfile > /dev/null 2> /dev/null || grep "FAIL" $errfile > /dev/null 2> /dev/null; then
     echo "[!] Failed $test on trial $trial. Stdout in $outfile, stderr in $errfile"
   elif grep "warning" $outfile > /dev/null 2> /dev/null || grep "warning" $errfile > /dev/null 2> /dev/null; then
     echo "[!] Warning from $test on trial $trial. Stdout in $outfile, stderr in $errfile"

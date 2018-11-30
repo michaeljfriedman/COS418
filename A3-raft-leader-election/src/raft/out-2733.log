@@ -1,0 +1,8 @@
+Test: initial election...
+... Passed
+Test: election after network failure...
+--- FAIL: TestReElection (0.50s)
+	config.go:275: term 1 has 2 (>1) leaders
+FAIL
+exit status 1
+FAIL	raft	3.013s

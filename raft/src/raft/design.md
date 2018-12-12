@@ -50,6 +50,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - If new term > my term:
       - Update my term to new term
       - Reset who I voted for
+    - Ack to caller if relevant
     - Start timer for election
   - Wait for signals:
     - Election Timeout: Transition to Candidate
@@ -105,13 +106,11 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 This background routine is started when the server starts, and runs indefinitely (regardless of state changes, etc.).
 
 - Apply Log Entries
-  - Do:
+  - Repeat indefinitely
     - If commit index > last applied index:
       - Increment last applied index
       - Send log entry at last applied index to the applyCh
-    - Start timer for periodic timeout
-  - Wait for signals:
-    - Periodic Timeout: Repeat from beginning
+    - Wait for a fixed interval
 
 ## Logging
 

@@ -167,14 +167,17 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 
-	dbg.LogKVs("Sending Convert To Follower signal", []string{tagAppendEntries, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) == 0, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagElection, tagInactivity, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) > 0, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(rf.CurrentTerm, args.Term, true)
 
-	if args.PrevLogIndex >= len(rf.Log)-1 || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.PrevLogIndex > len(rf.Log)-1 || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		dbg.LogKVs("Rejecting AppendEntries because previous log entries don't match", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
+
+	reply.Success = true
 
 	// Check for conflicting log entries
 	myStartIndex := args.PrevLogIndex + 1
@@ -297,7 +300,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Enter Follower state
 	dbg.LogKVs("Initialized Raft server", []string{tagMake}, map[string]interface{}{"rf": rf})
-	go rf.beFollower(0, false, nil)
+	go rf.beFollower(0, false, make(chan bool, 1))
 	go rf.applyLogEntries(applyCh)
 
 	return rf
@@ -580,7 +583,7 @@ checkForValidSignal:
 
 			if reply.Term > currentTerm {
 				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeLeader, tagConsensus, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "reply.Term": reply.Term, "rf": rf})
-				rf.sendConvertToFollowerSig(currentTerm, reply.Term, false)
+				rf.sendConvertToFollowerSig(currentTerm, reply.Term, true)
 				return
 			}
 

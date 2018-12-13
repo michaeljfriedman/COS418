@@ -54,7 +54,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - Start timer for election
   - Wait for signals:
     - Election Timeout: Transition to Candidate
-    - Convert To Follower: Ignore if sent from the wrong current term. Reset election timer and repeat from beginning, passing the new term
+    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise repeat from beginning, passing the new term
 
 - Candidate
   - Do:
@@ -64,7 +64,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - Start timer for election timeout
   - Wait for signals:
     - Win: Transition to Leader
-    - Convert To Follower: Ignore if sent from the wrong current term. Transition to Follower, passing the new term
+    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise transition to Follower, passing the new term
     - Election Timeout: Repeat from beginning
 
 - Leader
@@ -79,7 +79,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - Check to update the commit index - if for some log index N > commit index with log[N].term = my term, a majority of the matchIndex's are >= N, update the commit index to N.
     - Start timer for periodic timeout
   - Wait for signals:
-    - Convert To Follower: Ignore if sent from the wrong current term. Transition to Follower, passing the new term
+    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise transition to Follower, passing the new term
     - Periodic Timeout: Repeat from beginning
 
 [1] Note that since replies are received asynchronously, you must ensure externally that different rounds of AEs do not overlap. A simple way to do this is just to time out the RPCs with a shorter timeout than the periodic timeout.

@@ -68,7 +68,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - Election Timeout: Repeat from beginning
 
 - Leader
-  - Take *newly elected* as arg (boolean indicator)
+  - Take *newly elected* (boolean indicator) as arg
   - Do:
     - Set state to Leader
     - If newly elected:
@@ -119,6 +119,7 @@ This background routine is started when the server starts, and runs indefinitely
 - Tags:
   - One per function, to indicate what function we're in
   - Categories:
+    - `consensus`: Anywhere pertaining to the consensus protocol (appending entries to the log, sending new entries out to followers, updating commit index, etc.)
     - `election`: Anywhere pertaining to the election process
     - `follower`, `candidate`, `leader`: Anywhere pertaining to that state (e.g. in the state handler, in branches for that state elsewhere)
     - `inactivity`: Anywhere the protocol is "inactive" (just sending/receiving empty heartbeats)

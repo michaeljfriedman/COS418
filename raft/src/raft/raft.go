@@ -33,7 +33,7 @@ import (
 
 // Constants
 
-// Timeout intervals
+// Timeout intervals, in milliseconds
 const (
 	ApplyInterval          = 50
 	LeaderPeriodicInterval = 50
@@ -65,6 +65,7 @@ const (
 
 	// Categories
 	tagCandidate  = "candidate"
+	tagConsensus  = "consensus"
 	tagElection   = "election"
 	tagFollower   = "follower"
 	tagInactivity = "inactivity"
@@ -80,7 +81,11 @@ const (
 
 // AppendEntriesArgs contains the arguments for AppendEntries.
 type AppendEntriesArgs struct {
-	Term int
+	Entries      []LogEntry
+	LeaderCommit int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Term         int
 }
 
 // AppendEntriesReply contains the reply for AppendEntries.
@@ -400,7 +405,7 @@ func (rf *Raft) beCandidate() {
 		select {
 		case <-winSig:
 			dbg.LogKVs("Received Win signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
-			go rf.beLeader(true)
+			go rf.beLeader(currentTerm, nil, nil)
 			done = true
 		case sig := <-rf.ConvertToFollowerSig:
 			if sig.currentTerm != currentTerm {
@@ -472,70 +477,123 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 	}
 }
 
-// beLeader runs the Leader state for a particular term. Set newlyElected
-// depending on whether this leader was just elected or not (i.e. re-entering
-// this state after a heartbeat interval).
-func (rf *Raft) beLeader(newlyElected bool) {
+// beLeader runs the Leader state for a particular term. currentTerm is the term
+// for which this server is leader. nextIndex and matchIndex are optional args -
+// if this leader was just newly elected, pass nil for these values. Otherwise,
+// pass the nextIndex and matchIndex from the last periodic interval.
+func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 	// Set up Leader
 	dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
 	rf.Mu.Lock()
 	me := rf.Me
 	rf.State = Leader
-	currentTerm := rf.CurrentTerm
 
-	// Construct heartbeat args/replies
-	args := make([]AppendEntriesArgs, len(rf.Peers))
-	replies := make([]AppendEntriesReply, len(rf.Peers))
-	for i, _ := range rf.Peers {
-		args[i] = AppendEntriesArgs{currentTerm}
-		replies[i] = AppendEntriesReply{}
+	newlyElected := (nextIndex == nil)
+	if newlyElected {
+		// Initialize nextIndex and matchIndex
+		nextIndex = make([]int, len(rf.Peers))
+		matchIndex = make([]int, len(rf.Peers))
+		for i := range rf.Peers {
+			if i == me {
+				continue
+			}
+
+			nextIndex[i] = len(rf.Log)
+			matchIndex[i] = 0
+		}
 	}
-	dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Unlock()
 
-	dbg.LogKVsIf(newlyElected, "Entered Leader state, newly elected", "", []string{tagBeLeader, tagLeader, tagNewState}, map[string]interface{}{"rf": rf})
-	dbg.LogKVsIf(!newlyElected, "Re-entered Leader state after heartbeat interval", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"rf": rf})
+	dbg.LogKVsIf(newlyElected, "Entered Leader state, newly elected", "", []string{tagBeLeader, tagLeader, tagNewState}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
+	dbg.LogKVsIf(!newlyElected, "Re-entered Leader state after periodic interval", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
 
-	// Send a round of heartbeats
-	for i := 0; i < len(args); i++ {
+	// Send a round of AppendEntries
+	for i := range rf.Peers {
 		if i == me {
 			continue
 		}
 
-		go func(i int) {
-			dbg.LogKVs("Sending heartbeat", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"i": i, "args[i]": args[i], "rf": rf})
-			ok := rf.sendAppendEntries(i, args[i], &replies[i])
+		// Construct args
+		entries := make([]LogEntry, 0)
+		if len(rf.Log)-1 >= nextIndex[i] {
+			for j := nextIndex[i]; j < len(rf.Log); j++ {
+				entries = append(entries, rf.Log[j])
+			}
+		}
+		prevLogIndex := nextIndex[i] - 1
+		prevLogTerm := rf.Log[prevLogIndex].Term
+		args := AppendEntriesArgs{entries, rf.CommitIndex, prevLogIndex, prevLogTerm, currentTerm}
+		reply := AppendEntriesReply{}
+
+		// Send
+		go func(i int, args AppendEntriesArgs, reply AppendEntriesReply) {
+			dbg.LogKVsIf(len(entries) == 0, "Sending AppendEntries without new entries", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"i": i, "args": args, "rf": rf})
+			dbg.LogKVsIf(len(entries) != 0, "Sending AppendEntries with new entries", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"i": i, "args": args, "rf": rf})
+			ok := rf.sendAppendEntries(i, args, &reply)
 			if !ok {
-				return // ignore failed RPCs
+				return // ignore, try again next interval
 			}
 
-			if replies[i].Term > currentTerm {
-				sig := StepDownSignal{currentTerm, replies[i].Term}
-				dbg.LogKVs("Sending Step Down signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"rf": rf, "sig": sig})
-				rf.StepDownSig <- sig
+			if reply.Term > currentTerm {
+				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeLeader, tagConsensus, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "reply.Term": reply.Term, "rf": rf})
+				rf.sendConvertToFollowerSig(currentTerm, reply.Term, false)
 				return
 			}
-		}(i)
+
+			if !reply.Success {
+				nextIndex[i]--
+				return
+			}
+
+			matchIndex[i] = args.PrevLogIndex + len(args.Entries)
+			nextIndex[i] = matchIndex[i] + 1
+		}(i, args, reply)
 	}
 
-	heartbeatTimer := newHeartbeatTimer()
+	// Check to update the commit index
+	for i := len(rf.Log) - 1; i > rf.CommitIndex; i-- {
+		if rf.Log[i].Term != currentTerm {
+			continue
+		}
+
+		// Count number of servers with matchIndex >= this log index
+		count := 1 // 1 for me
+		for j := range matchIndex {
+			if j == me {
+				continue
+			}
+
+			if matchIndex[j] >= i {
+				count++
+			}
+		}
+		if count >= (len(rf.Peers)/2)+1 {
+			dbg.LogKVs("Updating commit index", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"count": count, "currentTerm": currentTerm, "i": i, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
+			rf.CommitIndex = i
+			break
+		}
+	}
+
+	dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
+	rf.Mu.Unlock()
+
+	periodicTimer := newPeriodicTimer()
 
 	// Wait for signals to determine next state
 	done := false
 	for !done {
 		select {
-		case sig := <-rf.StepDownSig:
+		case sig := <-rf.ConvertToFollowerSig:
 			if sig.currentTerm != currentTerm {
-				dbg.LogKVs("Received Step Down signal, ignoring because term is wrong", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
-			dbg.LogKVs("Received Step Down signal, valid", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-			go rf.beFollower(sig.newTerm)
+			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
 			done = true
-		case <-heartbeatTimer.C:
-			dbg.LogKVs("Heartbeat timer timed out", []string{tagBeLeader, tagInactivity, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
-			go rf.beLeader(false)
+		case <-periodicTimer.C:
+			dbg.LogKVs("Leader periodic interval timed out", []string{tagBeLeader, tagInactivity, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
+			go rf.beLeader(currentTerm, nextIndex, matchIndex)
 			done = true
 		}
 	}
@@ -549,10 +607,9 @@ func (rf *Raft) sendConvertToFollowerSig(currentTerm int, newTerm int, isLockHel
 	<-ackCh
 }
 
-// newHeartbeatTimer returns a timer of fixed duration - the interval between
-// heartbeat messages sent by a Leader.
-func newHeartbeatTimer() *time.Timer {
-	return time.NewTimer(time.Millisecond * time.Duration(75))
+// newPeriodicTimer returns a timer for the leader's periodic interval.
+func newPeriodicTimer() *time.Timer {
+	return time.NewTimer(time.Millisecond * time.Duration(LeaderPeriodicInterval))
 }
 
 // save Raft's persistent state to stable storage,

@@ -170,7 +170,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	dbg.LogKVs("Sending Convert To Follower signal", []string{tagAppendEntries, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(rf.CurrentTerm, args.Term, true)
 
-	if rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if args.PrevLogIndex >= len(rf.Log)-1 || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
 		reply.Success = false
 		dbg.LogKVs("Rejecting AppendEntries because previous log entries don't match", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
@@ -178,7 +178,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Check for conflicting log entries
 	myStartIndex := args.PrevLogIndex + 1
-	for i := 0; i < min(len(args.Entries), len(rf.Log[myStartIndex:])); i++ {
+	for i := 0; i < min(len(args.Entries), len(rf.Log[args.PrevLogIndex:])-1); i++ {
 		myIndex := myStartIndex + i
 		if rf.Log[myIndex].Term != args.Entries[i].Term {
 			dbg.LogKVs("Deleting conflicting entries from log", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "i": i, "myIndex": myIndex, "myStartIndex": myStartIndex, "reply": reply, "rf": rf})

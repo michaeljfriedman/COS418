@@ -89,7 +89,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 - AppendEntries
   - If AE term < my term, reject message and reply with my term
   - Send Convert To Follower signal (current term = my term, new term = AE term) and wait for ack
-  - If my log[prevLogIndex].term doesn't match prevLogTerm, reject and reply with my term
+  - If I don't have log[prevLogIndex] or its term doesn't match prevLogTerm, reject and reply with my term
   - If one of my log entries conflicts with a new log entry (same index but different terms), delete it and all entries after it
   - Append all new entries *not* already in the log
   - If the leader's commit index > my commit index, set mine to min(leader's, index of my last log entry)

@@ -84,7 +84,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 
 [1] Note that since replies are received asynchronously, you must ensure externally that different rounds of AEs do not overlap. A simple way to do this is just to time out the RPCs with a shorter timeout than the periodic timeout.
 
-## External triggers - RPC Handlers
+## RPC Handlers
 
 - AppendEntries
   - If AE term < my term, reject message and reply with my term
@@ -100,6 +100,13 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
   - If I voted for no one or for this candidate already, and my log is not more up to date than the candidate's:
     - Grant vote
     - Send a Convert To Follower signal and wait for ack
+
+## Start Command
+
+This routine is run by a leader whenever the client sends a command via the `Start()` function.
+
+- Start Command
+  - Append a log entry for this command
 
 ## Apply Log Entries
 

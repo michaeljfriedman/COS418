@@ -301,17 +301,16 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	return rf
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election.
+// Start submits a command for the Raft servers to execute. If this server
+// isn't the leader, returns false. Otherwise, submits the command and returns
+// immediately.
 //
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
+// Note that there is no guarantee that this command will ever be committed to
+// the log, since the leader may fail or lose an election.
+//
+// The first return value is the index that the command will appear at if it's
+// ever committed. the second is the current term, and the third is true if
+// this server believes it is the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	dbg.LogKVs("Grabbing lock", []string{tagLock, tagStart}, map[string]interface{}{"rf": rf})
 	rf.Mu.Lock()
@@ -320,11 +319,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.Mu.Unlock()
 	}()
 
-	index := -1
-	currentTerm := rf.CurrentTerm
-	isLeader := (rf.State == Leader)
-	dbg.LogKVsIf(isLeader, "Starting command", "Rejecting command because not leader", []string{tagStart}, map[string]interface{}{"index": index, "rf": rf})
-	return index, currentTerm, isLeader
+	if rf.State == Leader {
+		// Append entry to log
+		entry := LogEntry{rf.CurrentTerm, command}
+		dbg.LogKVs("Appending new entry to log", []string{tagConsensus, tagLeader, tagStart}, map[string]interface{}{"entry": entry, "rf": rf})
+		rf.Log = append(rf.Log, entry)
+		index := len(rf.Log) - 1
+		return index, rf.CurrentTerm, true
+	}
+	dbg.LogKVs("Rejecting command because not leader", []string{tagConsensus, tagStart}, map[string]interface{}{"rf": rf})
+	return -1, rf.CurrentTerm, false
 }
 
 //------------------------------------------------------------------------------

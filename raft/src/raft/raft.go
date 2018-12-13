@@ -281,13 +281,15 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// Initialize
 	rf := &Raft{
-		CurrentTerm: -1,
-		Log:         make([]LogEntry, 1), // initialize with dummy value at index 0
-		Me:          me,
-		Peers:       peers,
-		Persister:   persister,
-		State:       "",
-		VotedFor:    -1,
+		CommitIndex:          0,
+		ConvertToFollowerSig: make(chan ConvertToFollowerSignal, len(peers)),
+		CurrentTerm:          -1,
+		Log:                  make([]LogEntry, 1), // initialize with dummy value at index 0
+		Me:                   me,
+		Peers:                peers,
+		Persister:            persister,
+		State:                "",
+		VotedFor:             -1,
 	}
 
 	// initialize from state persisted before a crash
@@ -389,6 +391,8 @@ func (rf *Raft) beCandidate() {
 				return // ignore failed RPCs
 			}
 
+			dbg.LogKVs("Got RequestVote reply", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
+
 			if reply.Term > currentTerm {
 				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "reply": reply, "rf": rf})
 				rf.sendConvertToFollowerSig(currentTerm, reply.Term, false)
@@ -396,7 +400,6 @@ func (rf *Raft) beCandidate() {
 			}
 
 			if reply.VoteGranted {
-				dbg.LogKVs("Got RequestVote reply", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"i": i, "reply": reply, "rf": rf})
 				votesCh <- true
 			}
 		}(i, args)
@@ -571,6 +574,9 @@ checkForValidSignal:
 			if !ok {
 				return // ignore, try again next interval
 			}
+
+			dbg.LogKVsIf(len(entries) == 0, "Got AppendEntries reply", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
+			dbg.LogKVsIf(len(entries) != 0, "Got AppendEntries reply", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 
 			if reply.Term > currentTerm {
 				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeLeader, tagConsensus, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "reply.Term": reply.Term, "rf": rf})

@@ -482,9 +482,29 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 // if this leader was just newly elected, pass nil for these values. Otherwise,
 // pass the nextIndex and matchIndex from the last periodic interval.
 func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
-	// Set up Leader
 	dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
 	rf.Mu.Lock()
+
+	// Check if received a signal since trying to grab the lock, otherwise proceed
+	done := false
+	for !done {
+		select {
+		case sig := <-rf.ConvertToFollowerSig:
+			if sig.currentTerm != currentTerm {
+				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+				continue
+			}
+
+			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
+			rf.Mu.Unlock()
+			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
+			return
+		default:
+			done = true
+		}
+	}
+
+	// Set up Leader
 	me := rf.Me
 	rf.State = Leader
 
@@ -579,7 +599,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 	periodicTimer := newPeriodicTimer()
 
 	// Wait for signals to determine next state
-	done := false
+	done = false
 	for !done {
 		select {
 		case sig := <-rf.ConvertToFollowerSig:

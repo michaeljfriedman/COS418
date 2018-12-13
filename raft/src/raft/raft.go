@@ -35,10 +35,11 @@ import (
 
 // Timeout intervals, in milliseconds
 const (
-	ApplyInterval          = 50
-	LeaderPeriodicInterval = 50
+	ApplyInterval          = 70
+	LeaderPeriodicInterval = 70
 	RandomMaxInterval      = 300
 	RandomMinInterval      = 150
+	RPCTimeoutInterval     = 50
 )
 
 // State is a state of the Raft.
@@ -664,12 +665,32 @@ func makeRandomTimer() *time.Timer {
 
 // sendAppendEntries is a wrapper for sending an AppendEntries RPC to `server`.
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.Peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
+	okCh := make(chan bool, 1)
+	go func() {
+		okCh <- rf.Peers[server].Call("Raft.AppendEntries", args, reply)
+	}()
+
+	timeout := time.NewTimer(time.Millisecond * time.Duration(RPCTimeoutInterval))
+	select {
+	case ok := <-okCh:
+		return ok
+	case <-timeout.C:
+		return false
+	}
 }
 
 // sendRequestVote is a wrapper for sending a RequestVote RPC to `server`.
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.Peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
+	okCh := make(chan bool, 1)
+	go func() {
+		okCh <- rf.Peers[server].Call("Raft.RequestVote", args, reply)
+	}()
+
+	timeout := time.NewTimer(time.Millisecond * time.Duration(RPCTimeoutInterval))
+	select {
+	case ok := <-okCh:
+		return ok
+	case <-timeout.C:
+		return false
+	}
 }

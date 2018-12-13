@@ -97,7 +97,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 - RequestVote
   - If RV term < my term, reject message and reply with my term
   - If RV term > my term, send a Convert To Follower signal (current term = my term, new term = RV term) and wait for ack
-  - If I voted for no one or for this candidate already:
+  - If I voted for no one or for this candidate already, and my log is not more up to date than the candidate's:
     - Grant vote
     - Send a Convert To Follower signal and wait for ack
 

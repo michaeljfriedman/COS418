@@ -127,8 +127,10 @@ type Raft struct {
 
 // RequestVoteArgs contains the arguments for RequestVote.
 type RequestVoteArgs struct {
-	CandidateID int
-	Term        int
+	CandidateID  int
+	LastLogIndex int
+	LastLogTerm  int
+	Term         int
 }
 
 // RequestVoteReply contains the reply for RequestVote.
@@ -215,6 +217,16 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
+		// Check that my log is not more up to date than theirs
+		myLastLogIndex := len(rf.Log) - 1
+		myLastLogTerm := rf.Log[myLastLogIndex].Term
+		if myLastLogTerm > args.LastLogTerm {
+			return
+		}
+		if myLastLogTerm == args.LastLogTerm && myLastLogIndex > args.LastLogIndex {
+			return
+		}
+
 		reply.VoteGranted = true
 		rf.VotedFor = args.CandidateID
 		dbg.LogKVs("Sending Convert To Follower signal", []string{tagElection, tagRequestVote, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
@@ -350,7 +362,8 @@ func (rf *Raft) beCandidate() {
 	args := make([]RequestVoteArgs, len(rf.Peers))
 	replies := make([]RequestVoteReply, len(rf.Peers))
 	for i := range rf.Peers {
-		args[i] = RequestVoteArgs{me, currentTerm}
+		lastLogIndex := len(rf.Log) - 1
+		args[i] = RequestVoteArgs{me, lastLogIndex, rf.Log[lastLogIndex].Term, currentTerm}
 		replies[i] = RequestVoteReply{}
 	}
 	dbg.LogKVs("Returning lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})

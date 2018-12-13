@@ -163,33 +163,42 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	reply.Term = rf.CurrentTerm
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
-		dbg.LogKVs("Rejecting invalid AppendEntries", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+		dbg.LogKVs("Rejecting AppendEntries because of low term", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
-	reply.Success = true
 
-	// Decide how to signal based on state
-	switch rf.State {
-	case Follower:
-		sig := ResetSignal{rf.CurrentTerm, -1}
-		if args.Term > rf.CurrentTerm {
-			sig.newTerm = args.Term
+	dbg.LogKVs("Sending Convert To Follower signal", []string{tagAppendEntries, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	rf.sendConvertToFollowerSig(rf.CurrentTerm, args.Term, true)
+
+	if rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		dbg.LogKVs("Rejecting AppendEntries because previous log entries don't match", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+		return
+	}
+
+	// Check for conflicting log entries
+	myStartIndex := args.PrevLogIndex + 1
+	for i := 0; i < min(len(args.Entries), len(rf.Log[myStartIndex:])); i++ {
+		myIndex := myStartIndex + i
+		if rf.Log[myIndex].Term != args.Entries[i].Term {
+			dbg.LogKVs("Deleting conflicting entries from log", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "i": i, "myIndex": myIndex, "myStartIndex": myStartIndex, "reply": reply, "rf": rf})
+			rf.Log = rf.Log[:myIndex]
+			break
 		}
-		dbg.LogKVs("Sending Reset signal", []string{tagAppendEntries, tagFollower, tagInactivity}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
-		rf.ResetSig <- sig
-	case Candidate:
-		sig := StepDownSignal{rf.CurrentTerm, -1}
-		if args.Term > rf.CurrentTerm {
-			sig.newTerm = args.Term
-		}
-		dbg.LogKVs("Sending Step Down signal", []string{tagAppendEntries, tagCandidate}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
-		rf.StepDownSig <- sig
-	case Leader:
-		if args.Term > rf.CurrentTerm {
-			sig := StepDownSignal{rf.CurrentTerm, args.Term}
-			dbg.LogKVs("Sending Step Down signal", []string{tagAppendEntries, tagLeader}, map[string]interface{}{"args": args, "reply": reply, "rf": rf, "sig": sig})
-			rf.StepDownSig <- sig
-		}
+	}
+
+	// Append new entries not already in the log
+	entriesStartIndex := len(rf.Log) - myStartIndex
+	dbg.LogKVsIf(entriesStartIndex < len(args.Entries), "Appending new entries to end of log", "", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "entriesStartIndex": entriesStartIndex, "myStartIndex": myStartIndex, "reply": reply, "rf": rf})
+	for i := entriesStartIndex; i < len(args.Entries); i++ {
+		rf.Log = append(rf.Log, args.Entries[i])
+	}
+
+	// Update commit index
+	if args.LeaderCommit > rf.CommitIndex {
+		newCommitIndex := min(args.LeaderCommit, len(rf.Log)-1)
+		dbg.LogKVs("Updating commit index", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "newCommitIndex": newCommitIndex, "reply": reply, "rf": rf})
+		rf.CommitIndex = newCommitIndex
 	}
 }
 
@@ -277,9 +286,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		Me:          me,
 		Peers:       peers,
 		Persister:   persister,
-		ResetSig:    make(chan ResetSignal, len(peers)),
 		State:       "",
-		StepDownSig: make(chan StepDownSignal, len(peers)),
 		VotedFor:    -1,
 	}
 
@@ -639,6 +646,14 @@ func (rf *Raft) sendConvertToFollowerSig(currentTerm int, newTerm int, isLockHel
 	ackCh := make(chan bool, 1)
 	rf.ConvertToFollowerSig <- ConvertToFollowerSignal{currentTerm, newTerm, isLockHeld, ackCh}
 	<-ackCh
+}
+
+// min returns the min of two numbers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // newPeriodicTimer returns a timer for the leader's periodic interval.

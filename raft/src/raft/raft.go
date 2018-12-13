@@ -638,14 +638,6 @@ waitForValidSignal:
 	}
 }
 
-// sendConvertToFollowerSig is a wrapper for sending a Convert To Follower signal and
-// waiting for an ack.
-func (rf *Raft) sendConvertToFollowerSig(currentTerm int, newTerm int, isLockHeld bool) {
-	ackCh := make(chan bool, 1)
-	rf.ConvertToFollowerSig <- ConvertToFollowerSignal{currentTerm, newTerm, isLockHeld, ackCh}
-	<-ackCh
-}
-
 // min returns the min of two numbers
 func min(a, b int) int {
 	if a < b {
@@ -698,6 +690,14 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 	case <-timeout.C:
 		return false
 	}
+}
+
+// sendConvertToFollowerSig is a wrapper for sending a Convert To Follower signal and
+// waiting for an ack.
+func (rf *Raft) sendConvertToFollowerSig(currentTerm int, newTerm int, isLockHeld bool) {
+	ackCh := make(chan bool, 1)
+	rf.ConvertToFollowerSig <- ConvertToFollowerSignal{currentTerm, newTerm, isLockHeld, ackCh}
+	<-ackCh
 }
 
 // sendRequestVote is a wrapper for sending a RequestVote RPC to `server`.

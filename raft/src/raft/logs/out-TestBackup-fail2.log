@@ -1,0 +1,5 @@
+Test: leader backs up quickly over incorrect follower logs...--- FAIL: TestBackup (42.98s)
+	config.go:424: one(2713134684675890561) failed to reach agreement
+FAIL
+exit status 1
+FAIL	raft	43.119s

@@ -54,17 +54,17 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - Start timer for election
   - Wait for signals:
     - Election Timeout: Transition to Candidate
-    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise repeat from beginning, passing the new term
+    - Convert To Follower: Repeat from beginning, passing the new term
 
 - Candidate
   - Do:
     - Set state to Candidate, inc term, vote for self
     - Send RequestVote to all other servers
-      - In bg, receive replies and tally up votes. When you get majority, Send Win signal, or if you get a reply with term > my term, send Convert To Follower signal (current term = my term, new term = reply term)
+      - In bg, receive replies and tally up votes. When you get majority, Send Win signal, or if you get a reply with term > my term, send Convert To Follower signal (new term = reply term)
     - Start timer for election timeout
   - Wait for signals:
     - Win: Transition to Leader
-    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise transition to Follower, passing the new term
+    - Convert To Follower: Transition to Follower, passing the new term
     - Election Timeout: Repeat from beginning
 
 - Leader
@@ -75,11 +75,11 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
       - Initialize nextIndex to 1 + my last log index, for each other server
       - Initialize matchIndex to 0, for each other server
     - Send AppendEntries to each other server [1], containing entries from its nextIndex to my last log index, if there are any, or no entries otherwise
-      - In bg, receive replies. If you get a reply with term > my term, send a Convert To Follower signal (current term = my term, new term = reply term). Otherwise, if you get a failure, decrement its nextIndex. Otherwise, if you get success, set its nextIndex to 1 + the last log index sent in this AE, and set its matchIndex to the last log index sent in this AE.
+      - In bg, receive replies. If you get a reply with term > my term, send a Convert To Follower signal (new term = reply term). Otherwise, if you get a failure, decrement its nextIndex. Otherwise, if you get success, set its nextIndex to 1 + the last log index sent in this AE, and set its matchIndex to the last log index sent in this AE.
     - Check to update the commit index - if for some log index N > commit index with log[N].term = my term, a majority of the matchIndex's are >= N, update the commit index to N.
     - Start timer for periodic timeout
   - Wait for signals:
-    - Convert To Follower: Ignore if sent from the wrong current term. Otherwise transition to Follower, passing the new term
+    - Convert To Follower: Transition to Follower, passing the new term
     - Periodic Timeout: Repeat from beginning
 
 [1] Note that since replies are received asynchronously, you must ensure externally that different rounds of AEs do not overlap. A simple way to do this is just to time out the RPCs with a shorter timeout than the periodic timeout.
@@ -88,7 +88,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 
 - AppendEntries
   - If AE term < my term, reject message and reply with my term
-  - Send Convert To Follower signal (current term = my term, new term = AE term) and wait for ack
+  - Send Convert To Follower signal (new term = AE term) and wait for ack
   - If I don't have log[prevLogIndex] or its term doesn't match prevLogTerm, reject and reply with my term
   - If one of my log entries conflicts with a new log entry (same index but different terms), delete it and all entries after it
   - Append all new entries *not* already in the log
@@ -96,7 +96,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 
 - RequestVote
   - If RV term < my term, reject message and reply with my term
-  - If RV term > my term, send a Convert To Follower signal (current term = my term, new term = RV term) and wait for ack
+  - If RV term > my term, send a Convert To Follower signal (new term = RV term) and wait for ack
   - If I voted for no one or for this candidate already, and my log is not more up to date than the candidate's:
     - Grant vote
     - Send a Convert To Follower signal and wait for ack

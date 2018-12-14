@@ -4,7 +4,7 @@
 
 # All the tests you wish to run. Uncomment the ones you want to add.
 tests=(
-  # TestInitialElection
+  TestInitialElection
   TestReElection
   # TestBasicAgree
   # TestFailAgree

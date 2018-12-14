@@ -22,13 +22,13 @@ func Logf(format string, tags []string, a ...interface{}) {
 
 // LogKVs prints a message to the log, along with its tags, and followed by a
 // list of key-value pairs specified by kvs. Returns an error if unable to
-// prase
+// parse.
 func LogKVs(msg string, tags []string, kvs map[string]interface{}) error {
 	kvStr, err := formatKVs(kvs)
+	log.Printf("msg=\"%v\" tags=\"%v\" %v", msg, formatTags(tags), kvStr)
 	if err != nil {
 		return err
 	}
-	log.Printf("msg=\"%v\" tags=\"%v\" %v", msg, formatTags(tags), kvStr)
 	return nil
 }
 

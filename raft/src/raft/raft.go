@@ -141,10 +141,10 @@ type RequestVoteReply struct {
 
 // ConvertToFollowerSignal represents a Convert To Follower signal.
 type ConvertToFollowerSignal struct {
-	currentTerm int
-	newTerm     int
-	isLockHeld  bool // indicates whether the sender of the signal is holding a lock
-	ackCh       chan bool
+	CurrentTerm int
+	NewTerm     int
+	IsLockHeld  bool // indicates whether the sender of the signal is holding a lock
+	AckCh       chan bool
 }
 
 //------------------------------------------------------------------------------
@@ -163,12 +163,12 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	reply.Term = rf.CurrentTerm
 	if args.Term < rf.CurrentTerm {
 		reply.Success = false
-		dbg.LogKVs("Rejecting AppendEntries because of low term", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+		dbg.LogKVs("Rejecting AppendEntries because of low term", []string{tagAppendEntries, tagElection}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
 
-	dbg.LogKVsIf(len(args.Entries) == 0, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagElection, tagInactivity, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
-	dbg.LogKVsIf(len(args.Entries) > 0, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) == 0, "Sending Convert To Follower signal upon receiving AppendEntries", "", []string{tagAppendEntries, tagElection, tagInactivity, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) > 0, "Sending Convert To Follower signal upon receiving AppendEntries", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(rf.CurrentTerm, args.Term, true)
 
 	if args.PrevLogIndex > len(rf.Log)-1 || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
@@ -435,13 +435,13 @@ waitForValidSignal:
 			go rf.beLeader(currentTerm, nil, nil)
 			break waitForValidSignal
 		case sig := <-rf.ConvertToFollowerSig:
-			if sig.currentTerm != currentTerm {
+			if sig.CurrentTerm != currentTerm {
 				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeCandidate, tagCandidate, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
 			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
+			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 			break waitForValidSignal
 		case <-electionTimer.C:
 			dbg.LogKVs("Election timer timed out", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
@@ -477,8 +477,8 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 		rf.Mu.Unlock()
 	}
 
-	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "", []string{tagBeFollower, tagFollower, tagNewState}, map[string]interface{}{"newTerm": newTerm, "rf": rf})
-	dbg.LogKVsIf(!updatedTerm, "Re-entered Follower state in same term", "", []string{tagBeFollower, tagFollower, tagInactivity}, map[string]interface{}{"newTerm": newTerm, "rf": rf})
+	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "", []string{tagBeFollower, tagFollower, tagNewState}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
+	dbg.LogKVsIf(!updatedTerm, "Re-entered Follower state in same term", "", []string{tagBeFollower, tagFollower, tagInactivity}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
 	ackCh <- true
 
 	electionTimer := makeRandomTimer()
@@ -492,13 +492,13 @@ waitForValidSignal:
 			go rf.beCandidate()
 			break waitForValidSignal
 		case sig := <-rf.ConvertToFollowerSig:
-			if sig.currentTerm != currentTerm {
+			if sig.CurrentTerm != currentTerm {
 				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeFollower, tagFollower, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
 			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
+			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 			break waitForValidSignal
 		}
 	}
@@ -517,14 +517,14 @@ checkForValidSignal:
 	for {
 		select {
 		case sig := <-rf.ConvertToFollowerSig:
-			if sig.currentTerm != currentTerm {
+			if sig.CurrentTerm != currentTerm {
 				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
 			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 			rf.Mu.Unlock()
-			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
+			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 			return
 		default:
 			break checkForValidSignal
@@ -578,7 +578,8 @@ checkForValidSignal:
 				return // ignore, try again next interval
 			}
 
-			dbg.LogKVsIf(len(entries) == 0, "Got AppendEntries reply", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
+			dbg.LogKVsIf(len(entries) == 0 && reply.Success, "Got AppendEntries reply, successful", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
+			dbg.LogKVsIf(len(entries) == 0 && !reply.Success, "Got AppendEntries reply, failure", "", []string{tagBeLeader, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 			dbg.LogKVsIf(len(entries) != 0, "Got AppendEntries reply", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 
 			if reply.Term > currentTerm {
@@ -631,13 +632,13 @@ waitForValidSignal:
 	for {
 		select {
 		case sig := <-rf.ConvertToFollowerSig:
-			if sig.currentTerm != currentTerm {
+			if sig.CurrentTerm != currentTerm {
 				dbg.LogKVs("Received Convert To Follower signal, ignoring because term is wrong", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
 				continue
 			}
 
 			dbg.LogKVs("Received Convert To Follower signal, valid", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-			go rf.beFollower(sig.newTerm, sig.isLockHeld, sig.ackCh)
+			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 			break waitForValidSignal
 		case <-periodicTimer.C:
 			dbg.LogKVs("Leader periodic interval timed out", []string{tagBeLeader, tagInactivity, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})

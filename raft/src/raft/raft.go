@@ -494,18 +494,30 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 // if this leader was just newly elected, pass nil for these values. Otherwise,
 // pass the nextIndex and matchIndex from the last periodic interval.
 func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
-	dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	// Convert request for a lock into a channel send, so we can select on it.
+	// Get the lock by reading from lockCh, and cancel the request for the lock
+	// or return it by sending to cancelOrUnlockCh.
+	lockCh := make(chan bool, 1)
+	cancelOrUnlockCh := make(chan bool, 1)
+	go func() {
+		dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
+		rf.Mu.Lock()
+		lockCh <- true
+		<-cancelOrUnlockCh
+		dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
+		rf.Mu.Unlock()
+	}()
 
-	// Check if received a signal since trying to grab the lock, otherwise proceed
+	// Try to grab lock, but cancel if we receive a convert to follower signal
+	// first
 	select {
+	case <-lockCh:
+		break
 	case sig := <-rf.ConvertToFollowerSig:
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		rf.Mu.Unlock()
+		cancelOrUnlockCh <- true
 		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 		return
-	default:
-		break
 	}
 
 	// Set up Leader
@@ -606,8 +618,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 		}
 	}
 
-	dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Unlock()
+	cancelOrUnlockCh <- true
 
 	periodicTimer := time.NewTimer(time.Millisecond * time.Duration(LeaderPeriodicInterval))
 

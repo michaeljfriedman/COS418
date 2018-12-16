@@ -364,8 +364,14 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg) {
 // beCandidate runs the Candidate state for a particular term.
 func (rf *Raft) beCandidate() {
 	// Set up Candidate
-	dbg.LogKVs("Grabbing lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
+	unlockCh, sig := rf.selectLockOrConvertToFollowerSig()
+	if unlockCh == nil {
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf, "sig": sig})
+		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
+		return
+	}
+
 	me := rf.Me
 	npeers := len(rf.Peers)
 	rf.State = Candidate
@@ -415,7 +421,7 @@ func (rf *Raft) beCandidate() {
 	}
 
 	dbg.LogKVs("Returning lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Unlock()
+	unlockCh <- true
 
 	// Tally votes in the background
 	electionTimer := makeRandomTimer()
@@ -453,9 +459,16 @@ func (rf *Raft) beCandidate() {
 // state is complete.
 func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 	// Set up Follower
+	var unlockCh chan bool
 	if !isLockHeld {
-		dbg.LogKVs("Grabbing lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Lock()
+		dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"newTerm": newTerm, "rf": rf})
+		var sig ConvertToFollowerSignal
+		unlockCh, sig = rf.selectLockOrConvertToFollowerSig()
+		if unlockCh == nil {
+			dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"newTerm": newTerm, "rf": rf, "sig": sig})
+			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
+			return
+		}
 	}
 
 	rf.State = Follower
@@ -468,8 +481,8 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 	currentTerm := rf.CurrentTerm
 
 	if !isLockHeld {
-		dbg.LogKVs("Returning lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
+		dbg.LogKVs("Returning lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"rf": rf, "unlockCh": unlockCh})
+		unlockCh <- true
 	}
 
 	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "", []string{tagBeFollower, tagFollower, tagNewState}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
@@ -494,28 +507,10 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 // if this leader was just newly elected, pass nil for these values. Otherwise,
 // pass the nextIndex and matchIndex from the last periodic interval.
 func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
-	// Convert request for a lock into a channel send, so we can select on it.
-	// Get the lock by reading from lockCh, and cancel the request for the lock
-	// or return it by sending to cancelOrUnlockCh.
-	lockCh := make(chan bool, 1)
-	cancelOrUnlockCh := make(chan bool, 1)
-	go func() {
-		dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Lock()
-		lockCh <- true
-		<-cancelOrUnlockCh
-		dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
-	}()
-
-	// Try to grab lock, but cancel if we receive a convert to follower signal
-	// first
-	select {
-	case <-lockCh:
-		break
-	case sig := <-rf.ConvertToFollowerSig:
+	dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
+	unlockCh, sig := rf.selectLockOrConvertToFollowerSig()
+	if unlockCh == nil {
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		cancelOrUnlockCh <- true
 		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
 		return
 	}
@@ -618,7 +613,8 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 		}
 	}
 
-	cancelOrUnlockCh <- true
+	dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf})
+	unlockCh <- true
 
 	periodicTimer := time.NewTimer(time.Millisecond * time.Duration(LeaderPeriodicInterval))
 
@@ -669,6 +665,35 @@ func (rf *Raft) readPersist(data []byte) {
 func makeRandomTimer() *time.Timer {
 	r := RandomMinInterval + rand.Intn(RandomMaxInterval-RandomMinInterval)
 	return time.NewTimer(time.Millisecond * time.Duration(r))
+}
+
+// selectLockOrConvertToFollowerSig simulates a "select" statement between
+// grabbing a lock or receiving a Convert To Follower signal. Returns a
+// channel if we get the lock first, or the signal if we get it first. If you
+// get the channel, send true on it to return the lock. The unlock channel will
+// be nil if you don't get the lock, so you can use this to determine which
+// value you got.
+func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, ConvertToFollowerSignal) {
+	// Convert request for a lock into a channel send, so we can select on it.
+	// Get the lock by reading from lockCh, and cancel the request for the lock
+	// or return it by sending to cancelorUnlockCh.
+	lockCh := make(chan bool, 1)
+	cancelOrUnlockCh := make(chan bool, 1)
+	go func() {
+		rf.Mu.Lock()
+		lockCh <- true
+		<-cancelOrUnlockCh
+		rf.Mu.Unlock()
+	}()
+
+	// Try to grab lock, but cancel if we receive a Convert To Follower signal
+	select {
+	case <-lockCh:
+		return cancelOrUnlockCh, ConvertToFollowerSignal{}
+	case sig := <-rf.ConvertToFollowerSig:
+		cancelOrUnlockCh <- true
+		return nil, sig
+	}
 }
 
 // sendAppendEntries is a wrapper for sending an AppendEntries RPC to `server`.

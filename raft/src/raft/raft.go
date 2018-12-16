@@ -191,7 +191,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	// Append new entries not already in the log
 	entriesStartIndex := len(rf.Log) - myStartIndex
-	dbg.LogKVsIf(entriesStartIndex < len(args.Entries), "Appending new entries to end of log", "", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "entriesStartIndex": entriesStartIndex, "myStartIndex": myStartIndex, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(entriesStartIndex < len(args.Entries), "Appending new entries to log", "", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "entriesStartIndex": entriesStartIndex, "myStartIndex": myStartIndex, "reply": reply, "rf": rf})
 	for i := entriesStartIndex; i < len(args.Entries); i++ {
 		rf.Log = append(rf.Log, args.Entries[i])
 	}
@@ -326,7 +326,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if rf.State == Leader {
 		// Append entry to log
 		entry := LogEntry{rf.CurrentTerm, command}
-		dbg.LogKVs("Appending new entry to log", []string{tagConsensus, tagLeader, tagStart}, map[string]interface{}{"entry": entry, "rf": rf})
+		dbg.LogKVs("Appending submitted entry to log", []string{tagConsensus, tagLeader, tagStart}, map[string]interface{}{"entry": entry, "rf": rf})
 		rf.Log = append(rf.Log, entry)
 		index := len(rf.Log) - 1
 		return index, rf.CurrentTerm, true
@@ -346,13 +346,13 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg) {
 	for {
 		dbg.LogKVs("Grabbing lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
 		rf.Mu.Lock()
-		if rf.CommitIndex > lastApplied {
+		dbg.LogKVsIf(lastApplied < rf.CommitIndex, "Applying log entries through commit index", "", []string{tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
+		for lastApplied < rf.CommitIndex {
 			lastApplied++
 			applyMsg := ApplyMsg{
 				Index:   lastApplied,
 				Command: rf.Log[lastApplied].Command,
 			}
-			dbg.LogKVs("Applying log entry", []string{tagApplyLogEntries}, map[string]interface{}{"applyMsg": applyMsg, "rf": rf})
 			applyCh <- applyMsg
 		}
 		dbg.LogKVs("Returning lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})

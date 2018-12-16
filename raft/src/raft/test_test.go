@@ -8,16 +8,23 @@ package raft
 // test with the original before submitting.
 //
 
-import "testing"
-import "fmt"
-import "time"
-import "math/rand"
-import "sync/atomic"
-import "sync"
+import (
+	"fmt"
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"dbg"
+)
 
 // The tester generously allows solutions to complete elections in one second
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
+
+const tagTestFailAgree = "TestFailAgree"
+const tagTestBackup = "TestBackup"
 
 func TestInitialElection(t *testing.T) {
 	servers := 3
@@ -106,13 +113,17 @@ func TestFailAgree(t *testing.T) {
 
 	fmt.Println("Test: agreement despite follower failure...")
 
+	dbg.Log("Submitting 1 command", []string{tagTestFailAgree})
 	cfg.one(101, servers)
 
 	// follower network failure
 	leader := cfg.checkOneLeader()
-	cfg.disconnect((leader + 1) % servers)
+	follower1 := (leader + 1) % servers
+	dbg.Logf("Disconnecting follower %v", []string{tagTestFailAgree}, follower1)
+	cfg.disconnect(follower1)
 
 	// agree despite one failed server?
+	dbg.Log("Submitting 4 commands", []string{tagTestFailAgree})
 	cfg.one(102, servers-1)
 	cfg.one(103, servers-1)
 	time.Sleep(RaftElectionTimeout)
@@ -120,9 +131,11 @@ func TestFailAgree(t *testing.T) {
 	cfg.one(105, servers-1)
 
 	// failed server re-connected
-	cfg.connect((leader + 1) % servers)
+	dbg.Logf("Reconnecting follower %v", []string{tagTestFailAgree}, follower1)
+	cfg.connect(follower1)
 
 	// agree with full set of servers?
+	dbg.Log("Submitting 2 commands", []string{tagTestFailAgree})
 	cfg.one(106, servers)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers)
@@ -328,67 +341,82 @@ func TestBackup(t *testing.T) {
 
 	fmt.Print("Test: leader backs up quickly over incorrect follower logs...")
 
-	cfg.one(rand.Int(), servers)
+	dbg.Log("Submitting 1 command (101)", []string{tagTestBackup})
+	cfg.one(101, servers)
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
-	cfg.disconnect((leader1 + 2) % servers)
-	cfg.disconnect((leader1 + 3) % servers)
-	cfg.disconnect((leader1 + 4) % servers)
+	follower2 := (leader1 + 2) % servers
+	follower3 := (leader1 + 3) % servers
+	follower4 := (leader1 + 4) % servers
+	dbg.Logf("Disconnecting partition 2 (followers %v, %v, %v)", []string{tagTestBackup}, follower2, follower3, follower4)
+	cfg.disconnect(follower2)
+	cfg.disconnect(follower3)
+	cfg.disconnect(follower4)
 
 	// submit lots of commands that won't commit
+	dbg.Log("Submitting 50 commands (201-250)", []string{tagTestBackup})
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader1].Start(rand.Int())
+		cfg.rafts[leader1].Start(201 + i)
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
-	cfg.disconnect((leader1 + 0) % servers)
-	cfg.disconnect((leader1 + 1) % servers)
+	follower1 := (leader1 + 1) % servers
+	dbg.Logf("Reconnecting partition 2 (followers %v, %v, %v), and disconnecting partition 1 (leader %v and follower %v)", []string{tagTestBackup}, follower2, follower3, follower4, leader1, follower1)
+	cfg.disconnect(leader1)
+	cfg.disconnect(follower1)
 
 	// allow other partition to recover
-	cfg.connect((leader1 + 2) % servers)
-	cfg.connect((leader1 + 3) % servers)
-	cfg.connect((leader1 + 4) % servers)
+	cfg.connect(follower2)
+	cfg.connect(follower3)
+	cfg.connect(follower4)
 
 	// lots of successful commands to new group.
+	dbg.Log("Submitting 50 commands (301-350)", []string{tagTestBackup})
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3)
+		cfg.one(301+i, 3)
 	}
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
-	other := (leader1 + 2) % servers
+	other := follower2
 	if leader2 == other {
 		other = (leader2 + 1) % servers
 	}
+	dbg.Logf("Disconnecting 'other' in partition 2 (follower %v)", []string{tagTestBackup}, other)
 	cfg.disconnect(other)
 
 	// lots more commands that won't commit
+	dbg.Log("Submitting 50 commands (401-450)", []string{tagTestBackup})
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader2].Start(rand.Int())
+		cfg.rafts[leader2].Start(401 + i)
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
 
 	// bring original leader back to life,
+	dbg.Logf("Reconnecting partition 1 (leader %v and follower %v) and 'other' %v", []string{tagTestBackup}, leader1, follower1, other)
 	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 	}
-	cfg.connect((leader1 + 0) % servers)
-	cfg.connect((leader1 + 1) % servers)
+	cfg.connect(leader1)
+	cfg.connect(follower1)
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
+	dbg.Logf("Submitting 50 commands (501-550)", []string{tagTestBackup})
 	for i := 0; i < 50; i++ {
-		cfg.one(rand.Int(), 3)
+		cfg.one(501+i, 3)
 	}
 
 	// now everyone
+	dbg.Logf("Reconnecting everyone", []string{tagTestBackup})
 	for i := 0; i < servers; i++ {
 		cfg.connect(i)
 	}
-	cfg.one(rand.Int(), servers)
+	dbg.Logf("Submitting 1 command (601)", []string{tagTestBackup})
+	cfg.one(601, servers)
 
 	fmt.Println("... Passed")
 }

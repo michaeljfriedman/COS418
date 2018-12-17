@@ -91,8 +91,9 @@ type AppendEntriesArgs struct {
 
 // AppendEntriesReply contains the reply for AppendEntries.
 type AppendEntriesReply struct {
-	Success bool
-	Term    int
+	NextIndex int
+	Success   bool
+	Term      int
 }
 
 // as each Raft peer becomes aware that successive log entries are
@@ -159,9 +160,11 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.Mu.Unlock()
 	}()
 
+	// Always reply with my term, and default to failure
 	reply.Term = rf.CurrentTerm
+	reply.Success = false
+
 	if args.Term < rf.CurrentTerm {
-		reply.Success = false
 		dbg.LogKVs("Rejecting AppendEntries because of low term", []string{tagAppendEntries, tagElection}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
@@ -170,8 +173,20 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	dbg.LogKVsIf(len(args.Entries) > 0, "Sending Convert To Follower signal upon receiving AppendEntries", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(args.Term, true)
 
-	if args.PrevLogIndex > len(rf.Log)-1 || rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		reply.Success = false
+	if args.PrevLogIndex > len(rf.Log)-1 {
+		reply.NextIndex = len(rf.Log)
+		dbg.LogKVs("Rejecting AppendEntries because previous log index above upper bound of log", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+		return
+	}
+
+	if rf.Log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		conflictingTerm := rf.Log[args.PrevLogIndex].Term
+		for i := args.PrevLogIndex - 1; i >= 0; i-- {
+			if rf.Log[i].Term != conflictingTerm {
+				reply.NextIndex = i + 1
+				break
+			}
+		}
 		dbg.LogKVs("Rejecting AppendEntries because previous log entries don't match", []string{tagAppendEntries}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		return
 	}
@@ -580,7 +595,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 			rf.Mu.Unlock()
 
 			if !reply.Success {
-				nextIndex[i]--
+				nextIndex[i] = reply.NextIndex
 				return
 			}
 

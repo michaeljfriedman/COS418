@@ -75,7 +75,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
       - Initialize nextIndex to 1 + my last log index, for each other server
       - Initialize matchIndex to 0, for each other server
     - Send AppendEntries to each other server [1], containing entries from its nextIndex to my last log index, if there are any, or no entries otherwise
-      - In bg, receive replies. If you get a reply with term > my term, send a Convert To Follower signal (new term = reply term). Otherwise, if you get a failure, decrement its nextIndex. Otherwise, if you get success, set its nextIndex to 1 + the last log index sent in this AE, and set its matchIndex to the last log index sent in this AE.
+      - In bg, receive replies. If you get a reply with term > my term, send a Convert To Follower signal (new term = reply term). Otherwise, if you get a failure, set nextIndex to the next index in the reply. Otherwise, if you get success, set its nextIndex to 1 + the last log index sent in this AE, and set its matchIndex to the last log index sent in this AE.
     - Check to update the commit index - if for some log index N > commit index with log[N].term = my term, a majority of the matchIndex's are >= N, update the commit index to N.
     - Start timer for periodic timeout
   - Wait for signals:
@@ -89,7 +89,8 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 - AppendEntries
   - If AE term < my term, reject message and reply with my term
   - Send Convert To Follower signal (new term = AE term) and wait for ack
-  - If I don't have log[prevLogIndex] or its term doesn't match prevLogTerm, reject and reply with my term
+  - If I don't have log[prevLogIndex], reject and reply with my term and next index = 1 + my last log index
+  - If my log[prevLogIndex].term doesn't match prevLogTerm, reject and reply with my term and next index = the first log index with term log[prevLogIndex].term
   - If one of my log entries conflicts with a new log entry (same index but different terms), delete it and all entries after it
   - Append all new entries *not* already in the log
   - If the leader's commit index > my commit index, set mine to min(leader's, index of my last log entry)

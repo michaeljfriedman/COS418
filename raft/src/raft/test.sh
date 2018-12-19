@@ -4,15 +4,15 @@
 
 # All the tests you wish to run. Uncomment the ones you want to add.
 tests=(
-  # TestInitialElection
-  # TestReElection
-  # TestBasicAgree
-  # TestFailAgree
-  # TestFailNoAgree
-  # TestConcurrentStarts
-  # TestRejoin
+  TestInitialElection
+  TestReElection
+  TestBasicAgree
+  TestFailAgree
+  TestFailNoAgree
+  TestConcurrentStarts
+  TestRejoin
   TestBackup
-  # TestCount
+  TestCount
   # TestPersist1
   # TestPersist2
   # TestPersist3

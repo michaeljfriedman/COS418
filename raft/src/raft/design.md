@@ -12,6 +12,10 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
     ```text
               timeout
     Follower --------> Candidate
+     ^    |
+      \  /
+       --
+      Reset
     ```
     Follower is passive (no action), and then waits for one of 2 signals: timeout (in which case, transition to Candidate) or "reset" which is triggered by receiving AppendEntries (in which case, loop back and repeat).
 - Each state can be implemented as a **handler function**, which does the state's normal action, and then waits to be triggered by a signal to transition to a different state
@@ -21,25 +25,29 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
     - If RV term > my term, signal "convert to Follower" (i.e. over a channel)
     - ...
 
-    One of the state handlers will be running concurrently, and it will receive the signal and transition to the Follower state. (Some extra care must be taken to ensure that there's synchronization between this state transition and the next bit of logic in the RequestVote handler, but we address that in the more detailed part of this document.)
+    One of the state handlers will be running concurrently, and it will receive the signal and transition to the Follower state.
+
+    In this case, some extra care must be taken to ensure that we complete the conversion to Follower before proceeding in the RequestVote handler. We accomplish this by requiring the state handler to "ack" to the RequestVote handler when it has finished processing the signal, and upon receiving the ack, RequestVote can proceed.
 
 ### Leadership and consensus
 
 We break down the Leader state here a bit more, since it is a bit more intricate than what's described above.
 
-Generally, when reading the protocol in the paper, one can see two approaches for implementing log replication: an *eager* approach, and a *lazy* approach. Eager would immediately try to get consensus for a command immediately upon receiving it from the client - sending out AppendEntries, waiting for a majority of replies, committing, and applying the command. On the other hand, the lazy approach would (1) add an entry to the log when receiving it from the client; then separately (2) periodically check if new entries have been added but not yet replicated, and send AppendEntries if needed; (3) periodically check if there is consensus for some entry and update what is considered committed; (4) periodically check if there are new committed entries, and apply them.
+Generally, when reading the protocol in the paper, one can see two approaches for implementing log replication: an *eager* approach, and a *lazy* approach. Eager would immediately try to get consensus for a command upon receiving it from the client - sending out AppendEntries, waiting for a majority of replies, committing, and applying the command. On the other hand, the lazy approach would aggregate multiple commands from clients in its log, and only periodically check whether there are new entries to be replicated, committed, and applied.
 
 We take the lazy approach here, as it turns out to be more minimal and simpler to implement correctly. So the Leader has the following routines:
 
 - Start Command (Figure 2, Leader Rules, bullet 2): Upon receiving a command from the client, append it to my log
-- Send Periodic AppendEntries (Figure 2, Leader Rules, bullet 3): Periodically check if my last log index >= nextIndex for each Follower, and if so, send AppendEntries with the new log entries. Otherwise send AppendEntries with no log entries. (This serves the purpose of "heartbeats".)
-- Update Commit Index (Figure 2, Leader Rules, bullet 4): Periodically check if for some log index N > commit index, a majority of the matchIndex's are >= N and that entry's term is the same as my current term. If so, update the commit index to N.
+- Send Periodic AppendEntries (Figure 2, Leader Rules, bullet 3): Periodically check if new entries have been added but not replicated (my last log index >= nextIndex for each Follower), and if so, send AppendEntries with the new log entries. Otherwise send AppendEntries with no log entries. (This serves the purpose of "heartbeats".)
+- Update Commit Index (Figure 2, Leader Rules, bullet 4): Periodically check if there are uncommitted entries (for some log index N > commit index, a majority of the matchIndex's are >= N and that entry's term is the same as my current term). If so, update the commit index to N.
 
 And all servers have the following routine running at all times (regardless of their state) in the background:
 
-- Apply Log Entries (Figure 2, All Server Rules, bullet 1): Periodically check if the commit index > the last applied index. If so, increment the last applied index and apply the next entry.
+- Apply Log Entries (Figure 2, All Server Rules, bullet 1): Periodically check if there are entries committed but not yet applied (commit index > the last applied index). If so, apply all entries between the last applied index and commit index, and update the last applied index.
 
-When the Leader steps down (i.e. via an external "convert to Follower" signal), it must ensure that its Leader-specific routines stop before converting back to Follower (but Apply Log Entries should continue to run).
+So in this design, the log always has the property: last applied index <= commit index <= last log index, and each index is independently advanced.
+
+When the Leader steps down (i.e. via an external "convert to Follower" signal), it stops its Leader-specific routines, but Apply Log Entries continues to run.
 
 ## State Handlers
 

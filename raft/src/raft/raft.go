@@ -106,16 +106,36 @@ type ApplyMsg struct {
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
 
+// FollowerParams is a container for Follower state's parameters.
+type FollowerParams struct {
+	NewTerm    int
+	IsLockHeld bool
+	AckCh      chan bool
+}
+
+// LeaderParams is a container fot the Leader state's parameters
+type LeaderParams struct {
+	CurrentTerm int
+	NextIndex   []int
+	MatchIndex  []int
+}
+
 // LogEntry represents a log entry.
 type LogEntry struct {
 	Term    int
 	Command interface{}
 }
 
+// Params is a container for params returned by state handlers.
+type Params struct {
+	Follower FollowerParams
+	Leader   LeaderParams
+}
+
 // Raft implements a Raft server.
 type Raft struct {
 	CommitIndex          int
-	ConvertToFollowerSig chan ConvertToFollowerSignal
+	ConvertToFollowerSig chan FollowerParams
 	CurrentTerm          int
 	Log                  []LogEntry
 	Mu                   sync.Mutex
@@ -138,13 +158,6 @@ type RequestVoteArgs struct {
 type RequestVoteReply struct {
 	Term        int
 	VoteGranted bool
-}
-
-// ConvertToFollowerSignal represents a Convert To Follower signal.
-type ConvertToFollowerSignal struct {
-	NewTerm    int
-	IsLockHeld bool // indicates whether the sender of the signal is holding a lock
-	AckCh      chan bool
 }
 
 //------------------------------------------------------------------------------
@@ -224,6 +237,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	dbg.LogKVs("Grabbing lock", []string{tagElection, tagLock, tagRequestVote}, map[string]interface{}{"rf": rf})
 	rf.Mu.Lock()
 	defer func() {
+		dbg.LogKVsIf(reply.VoteGranted, "Granting vote", "Denying vote", []string{tagElection, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		dbg.LogKVs("Returning lock", []string{tagElection, tagLock, tagRequestVote}, map[string]interface{}{"rf": rf})
 		rf.Mu.Unlock()
 	}()
@@ -242,24 +256,26 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		rf.sendConvertToFollowerSig(args.Term, true)
 	}
 
-	if rf.VotedFor == -1 || rf.VotedFor == args.CandidateID {
-		// Check that my log is not more up to date than theirs
-		myLastLogIndex := len(rf.Log) - 1
-		myLastLogTerm := rf.Log[myLastLogIndex].Term
-		if myLastLogTerm > args.LastLogTerm {
-			return
-		}
-		if myLastLogTerm == args.LastLogTerm && myLastLogIndex > args.LastLogIndex {
-			return
-		}
-
-		reply.VoteGranted = true
-		rf.VotedFor = args.CandidateID
-		dbg.LogKVs("Sending Convert To Follower signal", []string{tagElection, tagRequestVote, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
-		rf.sendConvertToFollowerSig(args.Term, true)
+	// Check that I haven't voted yet and that my log is not more up to date
+	// then theirs
+	if rf.VotedFor != -1 && rf.VotedFor != args.CandidateID {
+		return
 	}
 
-	dbg.LogKVsIf(reply.VoteGranted, "Granting vote", "Denying vote", []string{tagElection, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	myLastLogIndex := len(rf.Log) - 1
+	myLastLogTerm := rf.Log[myLastLogIndex].Term
+	if myLastLogTerm > args.LastLogTerm {
+		return
+	}
+	if myLastLogTerm == args.LastLogTerm && myLastLogIndex > args.LastLogIndex {
+		return
+	}
+
+	// Grant vote
+	reply.VoteGranted = true
+	rf.VotedFor = args.CandidateID
+	dbg.LogKVs("Sending Convert To Follower signal", []string{tagElection, tagRequestVote, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	rf.sendConvertToFollowerSig(args.Term, true)
 }
 
 //------------------------------------------------------------------------------
@@ -299,7 +315,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Initialize
 	rf := &Raft{
 		CommitIndex:          0,
-		ConvertToFollowerSig: make(chan ConvertToFollowerSignal, len(peers)),
+		ConvertToFollowerSig: make(chan FollowerParams, len(peers)),
 		CurrentTerm:          -1,
 		Log:                  make([]LogEntry, 1), // initialize with dummy value at index 0
 		Me:                   me,
@@ -312,11 +328,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	// Enter Follower state
+	go rf.run(applyCh)
 	dbg.LogKVs("Initialized Raft server", []string{tagMake}, map[string]interface{}{"rf": rf})
-	go rf.beFollower(0, false, make(chan bool, 1))
-	go rf.applyLogEntries(applyCh)
-
 	return rf
 }
 
@@ -376,15 +389,15 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg) {
 	}
 }
 
-// beCandidate runs the Candidate state for a particular term.
-func (rf *Raft) beCandidate() {
+// beCandidate runs the Candidate state for a particular term. Returns the next
+// state to transition to, along with any params for that state.
+func (rf *Raft) beCandidate() (State, Params) {
 	// Set up Candidate
 	dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-	unlockCh, sig := rf.selectLockOrConvertToFollowerSig()
+	unlockCh, fparams := rf.selectLockOrConvertToFollowerSig()
 	if unlockCh == nil {
-		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf, "sig": sig})
-		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
-		return
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf, "fparams": fparams})
+		return Follower, Params{Follower: fparams}
 	}
 
 	me := rf.Me
@@ -457,32 +470,32 @@ func (rf *Raft) beCandidate() {
 	select {
 	case <-winSig:
 		dbg.LogKVs("Received Win signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
-		go rf.beLeader(currentTerm, nil, nil)
-	case sig := <-rf.ConvertToFollowerSig:
-		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
+		lparams := LeaderParams{CurrentTerm: currentTerm, NextIndex: nil, MatchIndex: nil}
+		return Leader, Params{Leader: lparams}
+	case fparams := <-rf.ConvertToFollowerSig:
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
+		return Follower, Params{Follower: fparams}
 	case <-electionTimer.C:
 		dbg.LogKVs("Election timer timed out", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
-		go rf.beCandidate()
+		return Candidate, Params{}
 	}
 }
 
-// beFollower runs the Follower state for a particular term. Pass newTerm as
-// arg, which is either a later term if one is known at the time of calling, or
-// the current term if not. isLockHeld indicates whether the caller is currently
-// holding a lock. Send true on the ackCh when the conversion to the Follower
-// state is complete.
-func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
+// beFollower runs the Follower state for a particular term. Returns the next
+// state to transition to and params for that state. newTerm is either a later
+// term if one is known at the time of calling, or the current term if not.
+// isLockHeld indicates whether the call is currently holding a lock. Send true
+// on ackCh when the conversion to the Follower state is complete.
+func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (State, Params) {
 	// Set up Follower
 	var unlockCh chan bool
 	if !isLockHeld {
 		dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"newTerm": newTerm, "rf": rf})
-		var sig ConvertToFollowerSignal
-		unlockCh, sig = rf.selectLockOrConvertToFollowerSig()
+		var fparams FollowerParams
+		unlockCh, fparams = rf.selectLockOrConvertToFollowerSig()
 		if unlockCh == nil {
-			dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"newTerm": newTerm, "rf": rf, "sig": sig})
-			go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
-			return
+			dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"newTerm": newTerm, "rf": rf, "fparams": fparams})
+			return Follower, Params{Follower: fparams}
 		}
 	}
 
@@ -493,7 +506,6 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 		rf.VotedFor = -1
 		updatedTerm = true
 	}
-	currentTerm := rf.CurrentTerm
 
 	if !isLockHeld {
 		dbg.LogKVs("Returning lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"rf": rf, "unlockCh": unlockCh})
@@ -510,24 +522,24 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) {
 	select {
 	case <-electionTimer.C:
 		dbg.LogKVs("Election timer timed out", []string{tagBeFollower, tagFollower, tagSignal}, map[string]interface{}{"rf": rf})
-		go rf.beCandidate()
-	case sig := <-rf.ConvertToFollowerSig:
-		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
+		return Candidate, Params{}
+	case fparams := <-rf.ConvertToFollowerSig:
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"rf": rf, "fparams": fparams})
+		return Follower, Params{Follower: fparams}
 	}
 }
 
-// beLeader runs the Leader state for a particular term. currentTerm is the term
-// for which this server is leader. nextIndex and matchIndex are optional args -
-// if this leader was just newly elected, pass nil for these values. Otherwise,
+// beLeader runs the Leader state for a particular term, indicated by
+// currentTerm. Returns the next state to transition to, along with any params
+// for that state. nextIndex and matchIndex are as specified by the paper. If
+// this leader was just newly elected, pass nil for these values. Otherwise,
 // pass the nextIndex and matchIndex from the last periodic interval.
-func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
+func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (State, Params) {
 	dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
-	unlockCh, sig := rf.selectLockOrConvertToFollowerSig()
+	unlockCh, fparams := rf.selectLockOrConvertToFollowerSig()
 	if unlockCh == nil {
-		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
-		return
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
+		return Follower, Params{Follower: fparams}
 	}
 
 	// Set up Leader
@@ -635,12 +647,13 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) {
 
 	// Wait for signals to determine next state
 	select {
-	case sig := <-rf.ConvertToFollowerSig:
-		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "sig": sig})
-		go rf.beFollower(sig.NewTerm, sig.IsLockHeld, sig.AckCh)
+	case fparams := <-rf.ConvertToFollowerSig:
+		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
+		return Follower, Params{Follower: fparams}
 	case <-periodicTimer.C:
 		dbg.LogKVs("Leader periodic interval timed out", []string{tagBeLeader, tagInactivity, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
-		go rf.beLeader(currentTerm, nextIndex, matchIndex)
+		lparams := LeaderParams{CurrentTerm: currentTerm, NextIndex: nextIndex, MatchIndex: matchIndex}
+		return Leader, Params{Leader: lparams}
 	}
 }
 
@@ -682,13 +695,36 @@ func makeRandomTimer() *time.Timer {
 	return time.NewTimer(time.Millisecond * time.Duration(r))
 }
 
+// run is the main continuous process that runs the Raft server. It starts the
+// server in the Follower state, and manages the transitions between the
+// different states.
+func (rf *Raft) run(applyCh chan ApplyMsg) {
+	go rf.applyLogEntries(applyCh)
+	nextState := Follower
+	params := Params{Follower: FollowerParams{
+		NewTerm:    0,
+		IsLockHeld: false,
+		AckCh:      make(chan bool, 1),
+	}}
+	for {
+		switch nextState {
+		case Follower:
+			nextState, params = rf.beFollower(params.Follower.NewTerm, params.Follower.IsLockHeld, params.Follower.AckCh)
+		case Candidate:
+			nextState, params = rf.beCandidate()
+		case Leader:
+			nextState, params = rf.beLeader(params.Leader.CurrentTerm, params.Leader.NextIndex, params.Leader.MatchIndex)
+		}
+	}
+}
+
 // selectLockOrConvertToFollowerSig simulates a "select" statement between
 // grabbing a lock or receiving a Convert To Follower signal. Returns a
 // channel if we get the lock first, or the signal if we get it first. If you
 // get the channel, send true on it to return the lock. The unlock channel will
 // be nil if you don't get the lock, so you can use this to determine which
 // value you got.
-func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, ConvertToFollowerSignal) {
+func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, FollowerParams) {
 	// Convert request for a lock into a channel send, so we can select on it.
 	// Get the lock by reading from lockCh, and cancel the request for the lock
 	// or return it by sending to cancelorUnlockCh.
@@ -704,10 +740,10 @@ func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, ConvertToFollower
 	// Try to grab lock, but cancel if we receive a Convert To Follower signal
 	select {
 	case <-lockCh:
-		return cancelOrUnlockCh, ConvertToFollowerSignal{}
-	case sig := <-rf.ConvertToFollowerSig:
+		return cancelOrUnlockCh, FollowerParams{}
+	case fparams := <-rf.ConvertToFollowerSig:
 		cancelOrUnlockCh <- true
-		return nil, sig
+		return nil, fparams
 	}
 }
 
@@ -731,7 +767,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 // waiting for an ack.
 func (rf *Raft) sendConvertToFollowerSig(newTerm int, isLockHeld bool) {
 	ackCh := make(chan bool, 1)
-	rf.ConvertToFollowerSig <- ConvertToFollowerSignal{newTerm, isLockHeld, ackCh}
+	rf.ConvertToFollowerSig <- FollowerParams{newTerm, isLockHeld, ackCh}
 	<-ackCh
 }
 

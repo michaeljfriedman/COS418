@@ -4,19 +4,19 @@
 
 # All the tests you wish to run. Uncomment the ones you want to add.
 tests=(
-  TestInitialElection
-  TestReElection
-  TestBasicAgree
-  TestFailAgree
-  TestFailNoAgree
-  TestConcurrentStarts
-  TestRejoin
-  TestBackup
-  TestCount
-  # TestPersist1
-  # TestPersist2
-  # TestPersist3
-  # TestFigure8
+  #TestInitialElection
+  #TestReElection
+  #TestBasicAgree
+  #TestFailAgree
+  #TestFailNoAgree
+  #TestConcurrentStarts
+  #TestRejoin
+  #TestBackup
+  #TestCount
+  #TestPersist1
+  #TestPersist2
+  #TestPersist3
+  TestFigure8
   # TestUnreliableAgree
   # TestFigure8Unreliable
   # TestReliableChurn
@@ -56,7 +56,7 @@ run_test() {
   errfile=err-$test-$trial.txt
 
   # Run test
-  go test -run $test > $outfile 2> $errfile
+  go test -run \^$test\$ > $outfile 2> $errfile
   test_status=$?
 
   # Check for failures and warnings

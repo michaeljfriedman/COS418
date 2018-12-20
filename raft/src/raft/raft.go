@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"bytes"
+	"encoding/gob"
 	"math/rand"
 	"sync"
 	"time"
@@ -25,9 +27,6 @@ import (
 	"dbg"
 	"labrpc"
 )
-
-// import "bytes"
-// import "encoding/gob"
 
 //------------------------------------------------------------------------------
 
@@ -59,6 +58,7 @@ const (
 	tagBeCandidate     = "beCandidate"
 	tagBeFollower      = "beFollower"
 	tagGetState        = "GetState"
+	tagKill            = "Kill"
 	tagBeLeader        = "beLeader"
 	tagMake            = "Make"
 	tagRequestVote     = "RequestVote"
@@ -136,6 +136,7 @@ type Raft struct {
 	CommitIndex          int
 	ConvertToFollowerSig chan FollowerParams
 	CurrentTerm          int
+	KillCh               chan bool
 	Log                  []LogEntry
 	Mu                   sync.Mutex
 	Me                   int // index into peers[]
@@ -232,6 +233,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		dbg.LogKVs("Updating commit index", []string{tagAppendEntries, tagConsensus, tagFollower}, map[string]interface{}{"args": args, "newCommitIndex": newCommitIndex, "reply": reply, "rf": rf})
 		rf.CommitIndex = newCommitIndex
 	}
+
+	rf.persist(true)
 }
 
 // RequestVote is the handler for receiving a RequestVote RPC.
@@ -278,6 +281,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Grant vote
 	reply.VoteGranted = true
 	rf.VotedFor = args.CandidateID
+	rf.persist(true)
 	dbg.LogKVs("Sending Convert To Follower signal", []string{tagElection, tagRequestVote, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(args.Term, true)
 }
@@ -302,9 +306,11 @@ func (rf *Raft) GetState() (int, bool) {
 	return currentTerm, isLeader
 }
 
-// the tester calls Kill when a Raft instance won't be needed again.
+// Kill should kill this server. The tester calls it when a Raft instance won't
+// be needed again.
 func (rf *Raft) Kill() {
-
+	dbg.LogKVs("Killing Raft server", []string{tagKill}, map[string]interface{}{"rf": rf})
+	rf.KillCh <- true
 }
 
 // Make creates a Raft server. The ports of all the Raft servers (including
@@ -321,6 +327,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		CommitIndex:          0,
 		ConvertToFollowerSig: make(chan FollowerParams, len(peers)),
 		CurrentTerm:          -1,
+		KillCh:               make(chan bool, 1),
 		Log:                  make([]LogEntry, 1), // initialize with dummy value at index 0
 		Me:                   me,
 		Peers:                peers,
@@ -330,7 +337,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	}
 
 	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
+	rf.readPersist(false)
 
 	go rf.run(applyCh)
 	dbg.LogKVs("Initialized Raft server", []string{tagMake}, map[string]interface{}{"rf": rf})
@@ -361,6 +368,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		dbg.LogKVs("Appending submitted entry to log", []string{tagConsensus, tagLeader, tagStart}, map[string]interface{}{"entry": entry, "rf": rf})
 		rf.Log = append(rf.Log, entry)
 		index := len(rf.Log) - 1
+		rf.persist(true)
 		return index, rf.CurrentTerm, true
 	}
 	dbg.LogKVs("Rejecting command because not leader", []string{tagConsensus, tagInactivity, tagStart}, map[string]interface{}{"rf": rf})
@@ -373,7 +381,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 // applyLogEntries periodically checks for any committed entries that have not
 // yet been applied, and applies them. It runs indefinitely.
-func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg) {
+func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 	lastApplied := 0
 	for {
 		dbg.LogKVs("Grabbing lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
@@ -389,7 +397,14 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg) {
 		}
 		dbg.LogKVs("Returning lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
 		rf.Mu.Unlock()
-		time.Sleep(time.Millisecond * time.Duration(ApplyInterval))
+
+		timeout := time.NewTimer(time.Millisecond * time.Duration(ApplyInterval))
+		select {
+		case <-timeout.C:
+			break
+		case <-killCh:
+			return
+		}
 	}
 }
 
@@ -411,6 +426,8 @@ func (rf *Raft) beCandidate() (State, Params) {
 	currentTerm := rf.CurrentTerm
 	rf.VotedFor = rf.Me
 	numVotes := 1
+
+	rf.persist(true)
 
 	dbg.LogKVs("Entered Candidate state", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"rf": rf})
 
@@ -507,6 +524,8 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (State
 		rf.CurrentTerm = newTerm
 		rf.VotedFor = -1
 		updatedTerm = true
+
+		rf.persist(true)
 	}
 
 	if !isLockHeld {
@@ -661,41 +680,55 @@ func min(a, b int) int {
 	return b
 }
 
-// save Raft's persistent state to stable storage,
-// where it can later be retrieved after a crash and restart.
-// see paper's Figure 2 for a description of what should be persistent.
-func (rf *Raft) persist() {
-	// Your code here.
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
-}
-
-// restore previously persisted state.
-func (rf *Raft) readPersist(data []byte) {
-	// Your code here.
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
-}
-
 // makeRandomTimer returns a timer of random duration.
 func makeRandomTimer() *time.Timer {
 	r := RandomMinInterval + rand.Intn(RandomMaxInterval-RandomMinInterval)
 	return time.NewTimer(time.Millisecond * time.Duration(r))
 }
 
+// persist saves Raft's persistent state to stable storage, where it can later
+// be retrieved after a crash and restart. Pass isLockHeld, which indicates
+// whether the caller is currently holding a lock.
+//
+// See the paper's Figure 2 for a description of what should be persisent.
+func (rf *Raft) persist(isLockHeld bool) {
+	if !isLockHeld {
+		rf.Mu.Lock()
+		defer rf.Mu.Unlock()
+	}
+
+	w := &bytes.Buffer{}
+	e := gob.NewEncoder(w)
+	e.Encode(rf.CurrentTerm)
+	e.Encode(rf.VotedFor)
+	e.Encode(rf.Log)
+	data := w.Bytes()
+	rf.Persister.SaveRaftState(data)
+}
+
+// readPersist restores previously persisted state. isLockHeld indicates whether
+// the caller is currently holding a lock.
+func (rf *Raft) readPersist(isLockHeld bool) {
+	if !isLockHeld {
+		rf.Mu.Lock()
+		defer rf.Mu.Unlock()
+	}
+
+	data := rf.Persister.ReadRaftState()
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.CurrentTerm)
+	d.Decode(&rf.VotedFor)
+	d.Decode(&rf.Log)
+}
+
 // run is the main continuous process that runs the Raft server. It starts the
 // server in the Follower state, and manages the transitions between the
 // different states.
 func (rf *Raft) run(applyCh chan ApplyMsg) {
-	go rf.applyLogEntries(applyCh)
+	killApplyLogEntriesCh := make(chan bool, 1)
+	go rf.applyLogEntries(applyCh, killApplyLogEntriesCh)
+
 	nextState := Follower
 	params := Params{Follower: FollowerParams{
 		NewTerm:    0,
@@ -710,6 +743,15 @@ func (rf *Raft) run(applyCh chan ApplyMsg) {
 			nextState, params = rf.beCandidate()
 		case Leader:
 			nextState, params = rf.beLeader(params.Leader.CurrentTerm, params.Leader.NextIndex, params.Leader.MatchIndex)
+		}
+
+		// Check if server was killed
+		select {
+		case <-rf.KillCh:
+			killApplyLogEntriesCh <- true
+			return
+		default:
+			break
 		}
 	}
 }

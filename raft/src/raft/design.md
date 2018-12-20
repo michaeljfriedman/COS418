@@ -128,6 +128,10 @@ This background routine is started when the server starts, and runs indefinitely
       - Send log entry at last applied index to the applyCh
     - Wait for a fixed interval
 
+## Persisting
+
+According to the paper, we must "persist" the following state to recover from a crash: currentTerm, votedFor, and the log. So we persist everywhere we change one of these values, immediately after.
+
 ## Logging
 
 - Where to log: in every function, every path of execution, at notable points

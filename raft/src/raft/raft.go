@@ -72,7 +72,6 @@ const (
 	tagInactivity = "inactivity"
 	tagLeader     = "leader"
 	tagLock       = "lock"
-	tagNewState   = "newState"
 	tagSignal     = "signal"
 )
 
@@ -173,6 +172,9 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		rf.Mu.Unlock()
 	}()
 
+	dbg.LogKVsIf(len(args.Entries) == 0 && args.LeaderCommit <= rf.CommitIndex, "Received AppendEntries", "", []string{tagAppendEntries, tagInactivity}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) > 0 || args.LeaderCommit > rf.CommitIndex, "Received AppendEntries", "", []string{tagAppendEntries, tagConsensus}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+
 	// Always reply with my term, and default to failure
 	reply.Term = rf.CurrentTerm
 	reply.Success = false
@@ -182,8 +184,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		return
 	}
 
-	dbg.LogKVsIf(len(args.Entries) == 0, "Sending Convert To Follower signal upon receiving AppendEntries", "", []string{tagAppendEntries, tagElection, tagInactivity, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
-	dbg.LogKVsIf(len(args.Entries) > 0, "Sending Convert To Follower signal upon receiving AppendEntries", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) == 0 && args.LeaderCommit <= rf.CommitIndex, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagElection, tagInactivity, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
+	dbg.LogKVsIf(len(args.Entries) > 0 || args.LeaderCommit > rf.CommitIndex, "Sending Convert To Follower signal", "", []string{tagAppendEntries, tagConsensus, tagElection, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 	rf.sendConvertToFollowerSig(args.Term, true)
 
 	if args.PrevLogIndex > len(rf.Log)-1 {
@@ -241,6 +243,8 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		dbg.LogKVs("Returning lock", []string{tagElection, tagLock, tagRequestVote}, map[string]interface{}{"rf": rf})
 		rf.Mu.Unlock()
 	}()
+
+	dbg.LogKVs("Received RequestVote", []string{tagElection, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 
 	// Always send back my term, and default to not voting
 	reply.Term = rf.CurrentTerm
@@ -359,7 +363,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index := len(rf.Log) - 1
 		return index, rf.CurrentTerm, true
 	}
-	dbg.LogKVs("Rejecting command because not leader", []string{tagConsensus, tagStart}, map[string]interface{}{"rf": rf})
+	dbg.LogKVs("Rejecting command because not leader", []string{tagConsensus, tagInactivity, tagStart}, map[string]interface{}{"rf": rf})
 	return -1, rf.CurrentTerm, false
 }
 
@@ -408,9 +412,10 @@ func (rf *Raft) beCandidate() (State, Params) {
 	rf.VotedFor = rf.Me
 	numVotes := 1
 
-	dbg.LogKVs("Entered Candidate state", []string{tagBeCandidate, tagCandidate, tagElection, tagNewState}, map[string]interface{}{"rf": rf})
+	dbg.LogKVs("Entered Candidate state", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"rf": rf})
 
 	// Send RequestVote RPCs
+	dbg.LogKVs("Sending round of RequestVotes", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"rf": rf})
 	lastLogIndex := len(rf.Log) - 1
 	args := RequestVoteArgs{me, lastLogIndex, rf.Log[lastLogIndex].Term, currentTerm}
 	votesCh := make(chan bool, npeers)
@@ -420,14 +425,11 @@ func (rf *Raft) beCandidate() (State, Params) {
 		}
 
 		go func(i int, args RequestVoteArgs) {
-			dbg.LogKVs("Sending RequestVote", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"i": i, "args": args, "rf": rf})
 			reply := RequestVoteReply{}
 			ok := rf.sendRequestVote(i, args, &reply)
 			if !ok {
 				return // ignore failed RPCs
 			}
-
-			dbg.LogKVs("Got RequestVote reply", []string{tagBeCandidate, tagCandidate, tagElection}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 
 			dbg.LogKVs("Grabbing lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
 			rf.Mu.Lock()
@@ -512,8 +514,7 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (State
 		unlockCh <- true
 	}
 
-	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "", []string{tagBeFollower, tagFollower, tagNewState}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
-	dbg.LogKVsIf(!updatedTerm, "Re-entered Follower state in same term", "", []string{tagBeFollower, tagFollower, tagInactivity}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
+	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "Re-entered Follower state in same term", []string{tagBeFollower, tagFollower, tagInactivity}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf": rf})
 	ackCh <- true
 
 	electionTimer := makeRandomTimer()
@@ -561,10 +562,11 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 		}
 	}
 
-	dbg.LogKVsIf(newlyElected, "Entered Leader state, newly elected", "", []string{tagBeLeader, tagLeader, tagNewState}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
+	dbg.LogKVsIf(newlyElected, "Entered Leader state, newly elected", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
 	dbg.LogKVsIf(!newlyElected, "Re-entered Leader state after periodic interval", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"currentTerm": currentTerm, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
 
 	// Send a round of AppendEntries
+	dbg.LogKVs("Sending round of AppendEntries", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"rf": rf})
 	for i := range rf.Peers {
 		if i == me {
 			continue
@@ -581,17 +583,11 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 
 		// Send
 		go func(i int, args AppendEntriesArgs) {
-			dbg.LogKVsIf(len(entries) == 0, "Sending AppendEntries without new entries", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"i": i, "args": args, "rf": rf})
-			dbg.LogKVsIf(len(entries) != 0, "Sending AppendEntries with new entries", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"i": i, "args": args, "rf": rf})
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(i, args, &reply)
 			if !ok {
 				return // ignore, try again next interval
 			}
-
-			dbg.LogKVsIf(len(entries) == 0 && reply.Success, "Got AppendEntries reply, successful", "", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
-			dbg.LogKVsIf(len(entries) == 0 && !reply.Success, "Got AppendEntries reply, failure", "", []string{tagBeLeader, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
-			dbg.LogKVsIf(len(entries) != 0, "Got AppendEntries reply", "", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 
 			dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
 			rf.Mu.Lock()

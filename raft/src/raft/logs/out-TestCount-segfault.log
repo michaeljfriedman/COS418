@@ -1,3 +1,0 @@
-Test: RPC counts aren't too high...
-exit status 2
-FAIL	raft	0.010s

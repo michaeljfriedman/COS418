@@ -387,16 +387,22 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 		dbg.LogKVs("Grabbing lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
 		rf.Mu.Lock()
 		dbg.LogKVsIf(lastApplied < rf.CommitIndex, "Applying log entries through commit index", "", []string{tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
+		applyMsgs := make([]ApplyMsg, rf.CommitIndex-lastApplied)
+		i := 0
 		for lastApplied < rf.CommitIndex {
 			lastApplied++
-			applyMsg := ApplyMsg{
+			applyMsgs[i] = ApplyMsg{
 				Index:   lastApplied,
 				Command: rf.Log[lastApplied].Command,
 			}
-			applyCh <- applyMsg
+			i++
 		}
 		dbg.LogKVs("Returning lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
 		rf.Mu.Unlock()
+
+		for i := 0; i < len(applyMsgs); i++ {
+			applyCh <- applyMsgs[i]
+		}
 
 		timeout := time.NewTimer(time.Millisecond * time.Duration(ApplyInterval))
 		select {

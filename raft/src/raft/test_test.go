@@ -23,8 +23,15 @@ import (
 // (much more than the paper's range of timeouts).
 const RaftElectionTimeout = 1000 * time.Millisecond
 
-const tagTestFailAgree = "TestFailAgree"
-const tagTestBackup = "TestBackup"
+const (
+	tagTestFailAgree         = "TestFailAgree"
+	tagTestBackup            = "TestBackup"
+	tagTestFigure8           = "TestFigure8"
+	tagTestUnreliableAgree   = "TestUnreliableAgree"
+	tagTestFigure8Unreliable = "TestFigure8Unreliable"
+	tagTestReliableChurn     = "TestReliableChurn"
+	tagTestUnreliableChurn   = "TestUnreliableChurn"
+)
 
 func TestInitialElection(t *testing.T) {
 	servers := 3
@@ -670,14 +677,20 @@ func TestFigure8(t *testing.T) {
 
 	fmt.Println("Test: Figure 8...")
 
-	cfg.one(rand.Int(), 1)
+	cmd := 1
+	dbg.Logf("Submitting command %v, waiting for replication on 1 server", []string{tagTestFigure8}, cmd)
+	cfg.one(cmd, 1)
 
 	nup := servers
-	for iters := 0; iters < 1000; iters++ {
+	niters := 1000
+	for iters := 0; iters < niters; iters++ {
+		cmd++
+
+		dbg.Logf("Submitting command %v to all servers, looking for leader", []string{tagTestFigure8}, cmd)
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
-				_, _, ok := cfg.rafts[i].Start(rand.Int())
+				_, _, ok := cfg.rafts[i].Start(cmd)
 				if ok {
 					leader = i
 				}
@@ -693,6 +706,7 @@ func TestFigure8(t *testing.T) {
 		}
 
 		if leader != -1 {
+			dbg.Logf("Crashing leader %v", []string{tagTestFigure8}, leader)
 			cfg.crash1(leader)
 			nup -= 1
 		}
@@ -700,6 +714,7 @@ func TestFigure8(t *testing.T) {
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.rafts[s] == nil {
+				dbg.Logf("Restarting and reconnecting server %v", []string{tagTestFigure8}, s)
 				cfg.start1(s)
 				cfg.connect(s)
 				nup += 1
@@ -707,6 +722,7 @@ func TestFigure8(t *testing.T) {
 		}
 	}
 
+	dbg.Logf("Restarting and reconnecting all (%v) servers", []string{tagTestFigure8}, servers)
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i)
@@ -714,7 +730,9 @@ func TestFigure8(t *testing.T) {
 		}
 	}
 
-	cfg.one(rand.Int(), servers)
+	cmd++
+	dbg.Logf("Submitting command %v, waiting for replication on all (%v) servers", []string{tagTestFigure8}, cmd, servers)
+	cfg.one(cmd, servers)
 
 	fmt.Println("... Passed")
 }
@@ -733,17 +751,23 @@ func TestUnreliableAgree(t *testing.T) {
 			wg.Add(1)
 			go func(iters, j int) {
 				defer wg.Done()
-				cfg.one((100*iters)+j, 1)
+				cmd := (100 * iters) + j
+				dbg.Logf("Submitting command %v, waiting for replication on 1 server", []string{tagTestUnreliableAgree}, cmd)
+				cfg.one(cmd, 1)
 			}(iters, j)
 		}
+		dbg.Logf("Submitting command %v, waiting for replication on 1 server", []string{tagTestUnreliableAgree}, iters)
 		cfg.one(iters, 1)
 	}
 
+	dbg.Log("Enabling unreliable mode", []string{tagTestUnreliableAgree})
 	cfg.setunreliable(false)
 
 	wg.Wait()
 
-	cfg.one(100, servers)
+	cmd := 100
+	dbg.Logf("Submitting command %v, waiting for replication on all (%v) servers", []string{tagTestUnreliableAgree}, cmd, servers)
+	cfg.one(cmd, servers)
 
 	fmt.Println("... Passed")
 }
@@ -755,16 +779,23 @@ func TestFigure8Unreliable(t *testing.T) {
 
 	fmt.Println("Test: Figure 8 (unreliable)...")
 
-	cfg.one(rand.Int()%10000, 1)
+	cmd := 1
+	dbg.Logf("Submitting command %v, waiting for replication on only 1 server", []string{tagTestFigure8Unreliable}, cmd)
+	cfg.one(cmd, 1)
 
 	nup := servers
-	for iters := 0; iters < 1000; iters++ {
+	niters := 1000
+	for iters := 0; iters < niters; iters++ {
+		cmd++
+
 		if iters == 200 {
+			dbg.Log("Enabling long reordering", []string{tagTestFigure8Unreliable})
 			cfg.setlongreordering(true)
 		}
+		dbg.Logf("Submitting command %v to all servers, looking for leader", []string{tagTestFigure8Unreliable}, cmd)
 		leader := -1
 		for i := 0; i < servers; i++ {
-			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
+			_, _, ok := cfg.rafts[i].Start(cmd)
 			if ok && cfg.connected[i] {
 				leader = i
 			}
@@ -779,6 +810,7 @@ func TestFigure8Unreliable(t *testing.T) {
 		}
 
 		if leader != -1 && (rand.Int()%1000) < int(RaftElectionTimeout/time.Millisecond)/2 {
+			dbg.Logf("Disconnecting leader %v", []string{tagTestFigure8Unreliable}, leader)
 			cfg.disconnect(leader)
 			nup -= 1
 		}
@@ -786,24 +818,28 @@ func TestFigure8Unreliable(t *testing.T) {
 		if nup < 3 {
 			s := rand.Int() % servers
 			if cfg.connected[s] == false {
+				dbg.Logf("Reconnecting server %v", []string{tagTestFigure8Unreliable}, s)
 				cfg.connect(s)
 				nup += 1
 			}
 		}
 	}
 
+	dbg.Log("Reconnecting all servers", []string{tagTestFigure8Unreliable})
 	for i := 0; i < servers; i++ {
 		if cfg.connected[i] == false {
 			cfg.connect(i)
 		}
 	}
 
-	cfg.one(rand.Int()%10000, servers)
+	cmd++
+	dbg.Logf("Submitting command %v, waiting for replication on all (%v) servers", []string{tagTestFigure8Unreliable}, cmd, servers)
+	cfg.one(cmd, servers)
 
 	fmt.Println("... Passed")
 }
 
-func internalChurn(t *testing.T, unreliable bool) {
+func internalChurn(t *testing.T, unreliable bool, tag string) {
 
 	if unreliable {
 		fmt.Println("Test: unreliable churn...")
@@ -823,8 +859,12 @@ func internalChurn(t *testing.T, unreliable bool) {
 		ret = nil
 		defer func() { ch <- ret }()
 		values := []int{}
+		iter := 1
 		for atomic.LoadInt32(&stop) == 0 {
-			x := rand.Int()
+			x := (me * 1000) + iter
+			iter++
+
+			dbg.Logf("Submitting command %v on all servers, looking for leader", []string{tag}, x)
 			index := -1
 			ok := false
 			for i := 0; i < servers; i++ {
@@ -874,20 +914,24 @@ func internalChurn(t *testing.T, unreliable bool) {
 	for iters := 0; iters < 20; iters++ {
 		if (rand.Int() % 1000) < 200 {
 			i := rand.Int() % servers
+			dbg.Logf("Disconnecting server %v", []string{tag}, i)
 			cfg.disconnect(i)
 		}
 
 		if (rand.Int() % 1000) < 500 {
 			i := rand.Int() % servers
 			if cfg.rafts[i] == nil {
+				dbg.Logf("Restarting server %v", []string{tag}, i)
 				cfg.start1(i)
 			}
+			dbg.Logf("Reconnecting server %v", []string{tag}, i)
 			cfg.connect(i)
 		}
 
 		if (rand.Int() % 1000) < 200 {
 			i := rand.Int() % servers
 			if cfg.rafts[i] != nil {
+				dbg.Logf("Crashing server %v", []string{tag}, i)
 				cfg.crash1(i)
 			}
 		}
@@ -900,7 +944,9 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	time.Sleep(RaftElectionTimeout)
+	dbg.Log("Enabling unreliable mode", []string{tag})
 	cfg.setunreliable(false)
+	dbg.Logf("Starting and connecting all (%v) servers", []string{tag}, servers)
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i)
@@ -921,7 +967,9 @@ func internalChurn(t *testing.T, unreliable bool) {
 
 	time.Sleep(RaftElectionTimeout)
 
-	lastIndex := cfg.one(rand.Int(), servers)
+	cmd := 100000
+	dbg.Logf("Submitting command %v, waiting for replication on all (%v) servers", []string{tag}, cmd, servers)
+	lastIndex := cfg.one(cmd, servers)
 
 	really := make([]int, lastIndex+1)
 	for index := 1; index <= lastIndex; index++ {
@@ -949,9 +997,9 @@ func internalChurn(t *testing.T, unreliable bool) {
 }
 
 func TestReliableChurn(t *testing.T) {
-	internalChurn(t, false)
+	internalChurn(t, false, tagTestReliableChurn)
 }
 
 func TestUnreliableChurn(t *testing.T) {
-	internalChurn(t, true)
+	internalChurn(t, true, tagTestUnreliableChurn)
 }

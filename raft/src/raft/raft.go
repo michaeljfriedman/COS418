@@ -34,8 +34,8 @@ import (
 
 // Timeout intervals, in milliseconds
 const (
-	ApplyInterval          = 70
-	LeaderPeriodicInterval = 70
+	ApplyInterval          = 75
+	LeaderPeriodicInterval = 35
 	RandomMaxInterval      = 300
 	RandomMinInterval      = 150
 	RPCTimeoutInterval     = 50
@@ -616,23 +616,23 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 
 			dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
 			rf.Mu.Lock()
+			defer func() {
+				dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
+				rf.Mu.Unlock()
+			}()
+
 			if reply.Term > rf.CurrentTerm {
 				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeLeader, tagConsensus, tagLeader, tagSignal}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 				rf.sendConvertToFollowerSig(reply.Term, true)
-
-				dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-				rf.Mu.Unlock()
 				return
 			}
-			dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-			rf.Mu.Unlock()
 
 			if !reply.Success {
-				nextIndex[i] = reply.NextIndex
+				nextIndex[i] = min(nextIndex[i], reply.NextIndex)
 				return
 			}
 
-			matchIndex[i] = args.PrevLogIndex + len(args.Entries)
+			matchIndex[i] = max(matchIndex[i], args.PrevLogIndex+len(args.Entries))
 			nextIndex[i] = matchIndex[i] + 1
 		}(i, args)
 	}
@@ -676,6 +676,14 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 		lparams := LeaderParams{CurrentTerm: currentTerm, NextIndex: nextIndex, MatchIndex: matchIndex}
 		return Leader, Params{Leader: lparams}
 	}
+}
+
+// max returns the max of two numbers
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // min returns the min of two numbers

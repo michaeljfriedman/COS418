@@ -109,14 +109,14 @@ type ApplyMsg struct {
 type FollowerParams struct {
 	NewTerm    int
 	IsLockHeld bool
-	AckCh      chan bool
+	ackCh      chan bool
 }
 
 // LeaderParams is a container fot the Leader state's parameters
 type LeaderParams struct {
-	CurrentTerm int
-	NextIndex   []int
-	MatchIndex  []int
+	currentTerm int
+	nextIndex   []int
+	matchIndex  []int
 }
 
 // LogEntry represents a log entry.
@@ -127,21 +127,21 @@ type LogEntry struct {
 
 // Params is a container for params returned by state handlers.
 type Params struct {
-	Follower FollowerParams
-	Leader   LeaderParams
+	follower FollowerParams
+	leader   LeaderParams
 }
 
 // Raft implements a Raft server.
 type Raft struct {
 	CommitIndex          int
-	ConvertToFollowerSig chan FollowerParams
+	convertToFollowerSig chan FollowerParams
 	CurrentTerm          int
-	KillCh               chan bool
+	killCh               chan bool
 	Log                  []LogEntry
-	Mu                   sync.Mutex
+	mu                   sync.Mutex
 	Me                   int // index into peers[]
-	Peers                []*labrpc.ClientEnd
-	Persister            *Persister
+	peers                []*labrpc.ClientEnd
+	persister            *Persister
 	State                State // Follower, Candidate, or Leader
 	VotedFor             int
 }
@@ -167,10 +167,10 @@ type RequestVoteReply struct {
 // AppendEntries is the handler for receiving a AppendEntries RPC.
 func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) {
 	dbg.LogKVs("Grabbing lock", []string{tagAppendEntries, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	rf.mu.Lock()
 	defer func() {
 		dbg.LogKVs("Returning lock", []string{tagAppendEntries, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 	}()
 
 	dbg.LogKVsIf(len(args.Entries) == 0 && args.LeaderCommit <= rf.CommitIndex, "Received AppendEntries", "", []string{tagAppendEntries, tagInactivity}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
@@ -240,11 +240,11 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 // RequestVote is the handler for receiving a RequestVote RPC.
 func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	dbg.LogKVs("Grabbing lock", []string{tagElection, tagLock, tagRequestVote}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	rf.mu.Lock()
 	defer func() {
 		dbg.LogKVsIf(reply.VoteGranted, "Granting vote", "Denying vote", []string{tagElection, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
 		dbg.LogKVs("Returning lock", []string{tagElection, tagLock, tagRequestVote}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 	}()
 
 	dbg.LogKVs("Received RequestVote", []string{tagElection, tagRequestVote}, map[string]interface{}{"args": args, "reply": reply, "rf": rf})
@@ -294,10 +294,10 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 // leader.
 func (rf *Raft) GetState() (int, bool) {
 	dbg.LogKVs("Grabbing lock", []string{tagGetState, tagLock}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	rf.mu.Lock()
 	defer func() {
 		dbg.LogKVs("Returning lock", []string{tagGetState, tagLock}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 	}()
 
 	currentTerm := rf.CurrentTerm
@@ -310,7 +310,7 @@ func (rf *Raft) GetState() (int, bool) {
 // be needed again.
 func (rf *Raft) Kill() {
 	dbg.LogKVs("Killing Raft server", []string{tagKill}, map[string]interface{}{"rf": rf})
-	rf.KillCh <- true
+	rf.killCh <- true
 }
 
 // Make creates a Raft server. The ports of all the Raft servers (including
@@ -325,13 +325,13 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Initialize
 	rf := &Raft{
 		CommitIndex:          0,
-		ConvertToFollowerSig: make(chan FollowerParams, len(peers)),
+		convertToFollowerSig: make(chan FollowerParams, len(peers)),
 		CurrentTerm:          -1,
-		KillCh:               make(chan bool, 1),
+		killCh:               make(chan bool, 1),
 		Log:                  make([]LogEntry, 1), // initialize with dummy value at index 0
 		Me:                   me,
-		Peers:                peers,
-		Persister:            persister,
+		peers:                peers,
+		persister:            persister,
 		State:                "",
 		VotedFor:             -1,
 	}
@@ -356,10 +356,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 // this server believes it is the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	dbg.LogKVs("Grabbing lock", []string{tagLock, tagStart}, map[string]interface{}{"rf": rf})
-	rf.Mu.Lock()
+	rf.mu.Lock()
 	defer func() {
 		dbg.LogKVs("Returning lock", []string{tagLock, tagStart}, map[string]interface{}{"rf": rf})
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 	}()
 
 	if rf.State == Leader {
@@ -385,7 +385,7 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 	lastApplied := 0
 	for {
 		dbg.LogKVs("Grabbing lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
-		rf.Mu.Lock()
+		rf.mu.Lock()
 		dbg.LogKVsIf(lastApplied < rf.CommitIndex, "Applying log entries through commit index", "", []string{tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
 		applyMsgs := make([]ApplyMsg, rf.CommitIndex-lastApplied)
 		i := 0
@@ -398,7 +398,7 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 			i++
 		}
 		dbg.LogKVs("Returning lock", []string{tagLock, tagApplyLogEntries}, map[string]interface{}{"lastApplied": lastApplied, "rf": rf})
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 
 		for i := 0; i < len(applyMsgs); i++ {
 			applyCh <- applyMsgs[i]
@@ -422,11 +422,11 @@ func (rf *Raft) beCandidate() (State, Params) {
 	unlockCh, fparams := rf.selectLockOrConvertToFollowerSig()
 	if unlockCh == nil {
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf, "fparams": fparams})
-		return Follower, Params{Follower: fparams}
+		return Follower, Params{follower: fparams}
 	}
 
 	me := rf.Me
-	npeers := len(rf.Peers)
+	npeers := len(rf.peers)
 	rf.State = Candidate
 	rf.CurrentTerm++
 	currentTerm := rf.CurrentTerm
@@ -455,17 +455,17 @@ func (rf *Raft) beCandidate() (State, Params) {
 			}
 
 			dbg.LogKVs("Grabbing lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-			rf.Mu.Lock()
+			rf.mu.Lock()
 			if reply.Term > rf.CurrentTerm {
 				dbg.LogKVs("Sending Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"args": args, "i": i, "reply": reply, "rf": rf})
 				rf.sendConvertToFollowerSig(reply.Term, true)
 
 				dbg.LogKVs("Returning lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-				rf.Mu.Unlock()
+				rf.mu.Unlock()
 				return
 			}
 			dbg.LogKVs("Returning lock", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf": rf})
-			rf.Mu.Unlock()
+			rf.mu.Unlock()
 
 			if reply.VoteGranted {
 				votesCh <- true
@@ -495,11 +495,11 @@ func (rf *Raft) beCandidate() (State, Params) {
 	select {
 	case <-winSig:
 		dbg.LogKVs("Received Win signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
-		lparams := LeaderParams{CurrentTerm: currentTerm, NextIndex: nil, MatchIndex: nil}
-		return Leader, Params{Leader: lparams}
-	case fparams := <-rf.ConvertToFollowerSig:
+		lparams := LeaderParams{currentTerm: currentTerm, nextIndex: nil, matchIndex: nil}
+		return Leader, Params{leader: lparams}
+	case fparams := <-rf.convertToFollowerSig:
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
-		return Follower, Params{Follower: fparams}
+		return Follower, Params{follower: fparams}
 	case <-electionTimer.C:
 		dbg.LogKVs("Election timer timed out", []string{tagBeCandidate, tagCandidate, tagElection, tagSignal}, map[string]interface{}{"rf": rf})
 		return Candidate, Params{}
@@ -520,7 +520,7 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (State
 		unlockCh, fparams = rf.selectLockOrConvertToFollowerSig()
 		if unlockCh == nil {
 			dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"newTerm": newTerm, "rf": rf, "fparams": fparams})
-			return Follower, Params{Follower: fparams}
+			return Follower, Params{follower: fparams}
 		}
 	}
 
@@ -549,9 +549,9 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (State
 	case <-electionTimer.C:
 		dbg.LogKVs("Election timer timed out", []string{tagBeFollower, tagFollower, tagSignal}, map[string]interface{}{"rf": rf})
 		return Candidate, Params{}
-	case fparams := <-rf.ConvertToFollowerSig:
+	case fparams := <-rf.convertToFollowerSig:
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"rf": rf, "fparams": fparams})
-		return Follower, Params{Follower: fparams}
+		return Follower, Params{follower: fparams}
 	}
 }
 
@@ -565,7 +565,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 	unlockCh, fparams := rf.selectLockOrConvertToFollowerSig()
 	if unlockCh == nil {
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
-		return Follower, Params{Follower: fparams}
+		return Follower, Params{follower: fparams}
 	}
 
 	// Set up Leader
@@ -575,9 +575,9 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 	newlyElected := (nextIndex == nil)
 	if newlyElected {
 		// Initialize nextIndex and matchIndex
-		nextIndex = make([]int, len(rf.Peers))
-		matchIndex = make([]int, len(rf.Peers))
-		for i := range rf.Peers {
+		nextIndex = make([]int, len(rf.peers))
+		matchIndex = make([]int, len(rf.peers))
+		for i := range rf.peers {
 			if i == me {
 				continue
 			}
@@ -592,7 +592,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 
 	// Send a round of AppendEntries
 	dbg.LogKVs("Sending round of AppendEntries", []string{tagBeLeader, tagInactivity, tagLeader}, map[string]interface{}{"rf": rf})
-	for i := range rf.Peers {
+	for i := range rf.peers {
 		if i == me {
 			continue
 		}
@@ -615,10 +615,10 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 			}
 
 			dbg.LogKVs("Grabbing lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-			rf.Mu.Lock()
+			rf.mu.Lock()
 			defer func() {
 				dbg.LogKVs("Returning lock", []string{tagBeLeader, tagLeader, tagLock}, map[string]interface{}{"rf": rf})
-				rf.Mu.Unlock()
+				rf.mu.Unlock()
 			}()
 
 			if reply.Term > rf.CurrentTerm {
@@ -654,7 +654,7 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 				count++
 			}
 		}
-		if count >= (len(rf.Peers)/2)+1 {
+		if count >= (len(rf.peers)/2)+1 {
 			dbg.LogKVs("Updating commit index", []string{tagBeLeader, tagConsensus, tagLeader}, map[string]interface{}{"count": count, "currentTerm": currentTerm, "i": i, "matchIndex": matchIndex, "nextIndex": nextIndex, "rf": rf})
 			rf.CommitIndex = i
 			break
@@ -668,13 +668,13 @@ func (rf *Raft) beLeader(currentTerm int, nextIndex []int, matchIndex []int) (St
 
 	// Wait for signals to determine next state
 	select {
-	case fparams := <-rf.ConvertToFollowerSig:
+	case fparams := <-rf.convertToFollowerSig:
 		dbg.LogKVs("Received Convert To Follower signal", []string{tagBeLeader, tagLeader, tagSignal}, map[string]interface{}{"currentTerm": currentTerm, "rf": rf, "fparams": fparams})
-		return Follower, Params{Follower: fparams}
+		return Follower, Params{follower: fparams}
 	case <-periodicTimer.C:
 		dbg.LogKVs("Leader periodic interval timed out", []string{tagBeLeader, tagInactivity, tagLeader, tagSignal}, map[string]interface{}{"rf": rf})
-		lparams := LeaderParams{CurrentTerm: currentTerm, NextIndex: nextIndex, MatchIndex: matchIndex}
-		return Leader, Params{Leader: lparams}
+		lparams := LeaderParams{currentTerm: currentTerm, nextIndex: nextIndex, matchIndex: matchIndex}
+		return Leader, Params{leader: lparams}
 	}
 }
 
@@ -707,8 +707,8 @@ func makeRandomTimer() *time.Timer {
 // See the paper's Figure 2 for a description of what should be persisent.
 func (rf *Raft) persist(isLockHeld bool) {
 	if !isLockHeld {
-		rf.Mu.Lock()
-		defer rf.Mu.Unlock()
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 	}
 
 	w := &bytes.Buffer{}
@@ -717,18 +717,18 @@ func (rf *Raft) persist(isLockHeld bool) {
 	e.Encode(rf.VotedFor)
 	e.Encode(rf.Log)
 	data := w.Bytes()
-	rf.Persister.SaveRaftState(data)
+	rf.persister.SaveRaftState(data)
 }
 
 // readPersist restores previously persisted state. isLockHeld indicates whether
 // the caller is currently holding a lock.
 func (rf *Raft) readPersist(isLockHeld bool) {
 	if !isLockHeld {
-		rf.Mu.Lock()
-		defer rf.Mu.Unlock()
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
 	}
 
-	data := rf.Persister.ReadRaftState()
+	data := rf.persister.ReadRaftState()
 	r := bytes.NewBuffer(data)
 	d := gob.NewDecoder(r)
 	d.Decode(&rf.CurrentTerm)
@@ -744,24 +744,24 @@ func (rf *Raft) run(applyCh chan ApplyMsg) {
 	go rf.applyLogEntries(applyCh, killApplyLogEntriesCh)
 
 	nextState := Follower
-	params := Params{Follower: FollowerParams{
+	params := Params{follower: FollowerParams{
 		NewTerm:    0,
 		IsLockHeld: false,
-		AckCh:      make(chan bool, 1),
+		ackCh:      make(chan bool, 1),
 	}}
 	for {
 		switch nextState {
 		case Follower:
-			nextState, params = rf.beFollower(params.Follower.NewTerm, params.Follower.IsLockHeld, params.Follower.AckCh)
+			nextState, params = rf.beFollower(params.follower.NewTerm, params.follower.IsLockHeld, params.follower.ackCh)
 		case Candidate:
 			nextState, params = rf.beCandidate()
 		case Leader:
-			nextState, params = rf.beLeader(params.Leader.CurrentTerm, params.Leader.NextIndex, params.Leader.MatchIndex)
+			nextState, params = rf.beLeader(params.leader.currentTerm, params.leader.nextIndex, params.leader.matchIndex)
 		}
 
 		// Check if server was killed
 		select {
-		case <-rf.KillCh:
+		case <-rf.killCh:
 			killApplyLogEntriesCh <- true
 			return
 		default:
@@ -783,17 +783,17 @@ func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, FollowerParams) {
 	lockCh := make(chan bool, 1)
 	cancelOrUnlockCh := make(chan bool, 1)
 	go func() {
-		rf.Mu.Lock()
+		rf.mu.Lock()
 		lockCh <- true
 		<-cancelOrUnlockCh
-		rf.Mu.Unlock()
+		rf.mu.Unlock()
 	}()
 
 	// Try to grab lock, but cancel if we receive a Convert To Follower signal
 	select {
 	case <-lockCh:
 		return cancelOrUnlockCh, FollowerParams{}
-	case fparams := <-rf.ConvertToFollowerSig:
+	case fparams := <-rf.convertToFollowerSig:
 		cancelOrUnlockCh <- true
 		return nil, fparams
 	}
@@ -803,7 +803,7 @@ func (rf *Raft) selectLockOrConvertToFollowerSig() (chan bool, FollowerParams) {
 func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	okCh := make(chan bool, 1)
 	go func() {
-		okCh <- rf.Peers[server].Call("Raft.AppendEntries", args, reply)
+		okCh <- rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	}()
 
 	timeout := time.NewTimer(time.Millisecond * time.Duration(RPCTimeoutInterval))
@@ -819,7 +819,7 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 // waiting for an ack.
 func (rf *Raft) sendConvertToFollowerSig(newTerm int, isLockHeld bool) {
 	ackCh := make(chan bool, 1)
-	rf.ConvertToFollowerSig <- FollowerParams{newTerm, isLockHeld, ackCh}
+	rf.convertToFollowerSig <- FollowerParams{newTerm, isLockHeld, ackCh}
 	<-ackCh
 }
 
@@ -827,7 +827,7 @@ func (rf *Raft) sendConvertToFollowerSig(newTerm int, isLockHeld bool) {
 func (rf *Raft) sendRequestVote(server int, args RequestVoteArgs, reply *RequestVoteReply) bool {
 	okCh := make(chan bool, 1)
 	go func() {
-		okCh <- rf.Peers[server].Call("Raft.RequestVote", args, reply)
+		okCh <- rf.peers[server].Call("Raft.RequestVote", args, reply)
 	}()
 
 	timeout := time.NewTimer(time.Millisecond * time.Duration(RPCTimeoutInterval))

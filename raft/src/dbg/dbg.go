@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
 )
 
 // errNotStruct is the constant error used by tryParseStruct.
@@ -21,8 +22,8 @@ func Logf(format string, tags []string, a ...interface{}) {
 }
 
 // LogKVs prints a message to the log, along with its tags, and followed by a
-// list of key-value pairs specified by kvs. Returns an error if unable to
-// parse.
+// list of key-value pairs specified by kvs. Returns an error if there was an
+// error while parsing.
 func LogKVs(msg string, tags []string, kvs map[string]interface{}) error {
 	kvStr, err := formatKVs(kvs)
 	log.Printf("msg=\"%v\" tags=\"%v\" %v", msg, formatTags(tags), kvStr)
@@ -72,31 +73,40 @@ func formatTags(tags []string) string {
 }
 
 // formatKVs formats the kvs map as a string list of "key=value" pieces.
-// Returns the string, or an error if unable to parse the key-value pairs
-// properly.
+// Returns a string that parses the values as best as possible, and possibly
+// an error if something went wrong during the process.
 func formatKVs(kvs map[string]interface{}) (string, error) {
 	if kvs == nil {
 		return "", nil
 	}
 
-	s := ""
+	ks := make([]string, len(kvs))
 	i := 0
-	for k, v := range kvs {
+	for k := range kvs {
+		ks[i] = k
+		i++
+	}
+	sort.Strings(ks)
+
+	s := ""
+	var retErr error
+	for i, k := range ks {
+		v := kvs[k]
 		valStr, err := tryParseStruct(v)
 		if err == errNotStruct {
 			valStr = fmt.Sprintf("%v", v)
 		} else if err != nil {
-			return "", err
+			retErr = err
 		}
 
+		var nextChar string
 		if i < len(kvs)-1 {
-			s += fmt.Sprintf("%v=%v ", k, valStr)
-		} else {
-			s += fmt.Sprintf("%v=%v", k, valStr) // exclude trailing space
+			nextChar = " "
 		}
+		s += fmt.Sprintf("%v=%v"+nextChar, k, valStr)
 		i++
 	}
-	return s, nil
+	return s, retErr
 }
 
 // tryParseStruct attempts to parse a struct value into a custom string.
@@ -122,17 +132,25 @@ func tryParseStruct(i interface{}) (string, error) {
 	t := v.Type()
 	format := "%v:%v"
 	s += "{"
-	err := errors.New("could not read all fields of struct (maybe not all fields were exported)")
-	for j := 0; j < v.NumField()-1; j++ {
-		if !v.Field(j).CanInterface() {
-			return "", err
+	unreadableField := false
+	for j := 0; j < v.NumField(); j++ {
+		var nextChar string
+		if j < v.NumField()-1 {
+			nextChar = " "
+		} else {
+			nextChar = "}"
 		}
-		s += fmt.Sprintf(format+" ", t.Field(j).Name, v.Field(j).Interface())
+
+		if !v.Field(j).CanInterface() {
+			unreadableField = true
+			continue
+		}
+		s += fmt.Sprintf(format+nextChar, t.Field(j).Name, v.Field(j).Interface())
 	}
-	end := v.NumField() - 1
-	if !v.Field(end).CanInterface() {
-		return "", err
+
+	var err error
+	if unreadableField {
+		err = errors.New("could not read all fields of struct (maybe not all exported)")
 	}
-	s += fmt.Sprintf(format+"}", t.Field(end).Name, v.Field(end).Interface()) // exclude trailing comma/space
-	return s, nil
+	return s, err
 }

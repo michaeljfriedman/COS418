@@ -134,19 +134,20 @@ func tryParseStruct(i interface{}) (string, error) {
 	s += "{"
 	unreadableField := false
 	for j := 0; j < v.NumField(); j++ {
-		var nextChar string
-		if j < v.NumField()-1 {
-			nextChar = " "
+		var prevChar string
+		if j == 0 {
+			prevChar = ""
 		} else {
-			nextChar = "}"
+			prevChar = " "
 		}
 
 		if !v.Field(j).CanInterface() {
 			unreadableField = true
 			continue
 		}
-		s += fmt.Sprintf(format+nextChar, t.Field(j).Name, v.Field(j).Interface())
+		s += fmt.Sprintf(prevChar+format, t.Field(j).Name, v.Field(j).Interface())
 	}
+	s += "}"
 
 	var err error
 	if unreadableField {

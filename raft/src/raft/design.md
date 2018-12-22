@@ -9,15 +9,16 @@ Decided to redo this assignment now that I'm a TA for the course, to refresh my 
 - Reference the state machine diagram from the Raft extended paper (Figure 4). Each Raft server is essentially a state machine with three states: Follower, Candidate, and Leader. The protocol manages what to do in each state and what triggers transitions between them.
 - Each state boils down to *doing some action* (e.g. as leader, send a round of heartbeats), *then waiting for a signal* that indicates what state to go to next (or stay in the same state and repeat, e.g. after a follower receives a heartbeat, reset its timer and wait for the next heartbeat)
   - Ex:
-    ```text
-              timeout
-    Follower --------> Candidate
-     ^    |
-      \  /
-       --
-      Reset
+  - ```text
+              convert to
+               follower            majority vote
+    Follower <---------- Candidate -------------> Leader
+                          ^    /
+                           \  /
+                            --
+                          timeout
     ```
-    Follower is passive (no action), and then waits for one of 2 signals: timeout (in which case, transition to Candidate) or "reset" which is triggered by receiving AppendEntries (in which case, loop back and repeat).
+    A candidate's action is to start an election, and then it waits for one of 3 signals: get a majority vote, which transitions to Leader; convert to follower (triggered by seeing a higher term or an AppendEntries from a leader in the same term), which transitions to Follower; or timeout, which transitions back to Candidate.
 - Each state can be implemented as a **handler function**, which does the state's normal action, and then waits to be triggered by a signal to transition to a different state
 - Signals can be implemented as **channels**, and waiting for one of multiple signals can be implemented with **select statements**
   - Ex: Part of the protocol is to convert to Follower whenever receiving an RPC (request or reply) with a term > your term. So for instance, upon receiving RequestVote, we may have:
@@ -58,18 +59,17 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
     - If new term > my term:
       - Update my term to new term
       - Reset who I voted for
-    - Ack to caller if relevant
-    - Start timer for election
+    - Ack to caller
   - Wait for signals:
+    - Reset Election Timer: Reset election timer and continue waiting for signals
     - Election Timeout: Transition to Candidate
     - Convert To Follower: Repeat from beginning, passing the new term
 
 - Candidate
   - Do:
-    - Set state to Candidate, inc term, vote for self
+    - Set state to Candidate, inc term, vote for self, reset election timer
     - Send RequestVote to all other servers
       - In bg, receive replies and tally up votes. When you get majority, Send Win signal, or if you get a reply with term > my term, send Convert To Follower signal (new term = reply term)
-    - Start timer for election timeout
   - Wait for signals:
     - Win: Transition to Leader
     - Convert To Follower: Transition to Follower, passing the new term
@@ -96,6 +96,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
 
 - AppendEntries
   - If AE term < my term, reject message and reply with my term
+  - Send Reset Election Timer signal
   - Send Convert To Follower signal (new term = AE term) and wait for ack
   - If I don't have log[prevLogIndex], reject and reply with my term and next index = 1 + my last log index
   - If my log[prevLogIndex].term doesn't match prevLogTerm, reject and reply with my term and next index = the first log index with term log[prevLogIndex].term
@@ -108,7 +109,7 @@ When the Leader steps down (i.e. via an external "convert to Follower" signal), 
   - If RV term > my term, send a Convert To Follower signal (new term = RV term) and wait for ack
   - If I voted for no one or for this candidate already, and my log is not more up to date than the candidate's:
     - Grant vote
-    - Send a Convert To Follower signal and wait for ack
+    - If I'm a Follower, send a Reset Election Timer signal
 
 ## Start Command
 

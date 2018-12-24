@@ -334,6 +334,7 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	// Initialize
+	dbg.LogKVs("Initializing Raft server", []string{tagMake}, map[string]interface{}{"me": me})
 	rf := &Raft{
 		CommitIndex:           0,
 		convertToFollowerSig:  make(chan followerParams, len(peers)),
@@ -348,11 +349,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		VotedFor: -1,
 	}
 
-	// initialize from state persisted before a crash
-	rf.readPersist(false)
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	dbg.LogKVs("Initialized Raft server", []string{tagMake}, map[string]interface{}{"rf": rf})
-	go rf.run(applyCh)
+	// initialize from state persisted before a crash
+	rf.readPersist(true)
+
+	// Start main routine
+	ackCh := make(chan bool, 1)
+	go rf.run(applyCh, true, ackCh)
+	<-ackCh
+
 	return rf
 }
 
@@ -752,8 +759,11 @@ func (rf *Raft) readPersist(isLockHeld bool) {
 
 // run is the main continuous process that runs the Raft server. It starts the
 // server in the Follower state, and manages the transitions between the
-// different states.
-func (rf *Raft) run(applyCh chan ApplyMsg) {
+// different states. applyCh is the channel submitted by the client, where
+// committed entries are sent to be applied. isLockHeld indicates whether a lock
+// is currently held by the caller. Send true on ackCh when the server has been
+// initialized in the Follower state.
+func (rf *Raft) run(applyCh chan ApplyMsg, isLockHeld bool, ackCh chan bool) {
 	killApplyLogEntriesCh := make(chan bool, 1)
 	go rf.applyLogEntries(applyCh, killApplyLogEntriesCh)
 
@@ -761,8 +771,8 @@ func (rf *Raft) run(applyCh chan ApplyMsg) {
 	nextState := follower
 	pm := params{follower: followerParams{
 		NewTerm:    0,
-		IsLockHeld: false,
-		ackCh:      make(chan bool, 1),
+		IsLockHeld: isLockHeld,
+		ackCh:      ackCh,
 	}}
 	for {
 		switch nextState {

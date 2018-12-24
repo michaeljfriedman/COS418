@@ -430,6 +430,8 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 // beCandidate runs the Candidate state for a particular term. Returns the next
 // state to transition to as a string, along with any params for that state.
 func (rf *Raft) beCandidate() (string, params) {
+	rf.electionTimer = makeRandomTimer()
+
 	// Set up Candidate
 	dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeCandidate, tagCandidate, tagElection, tagLock}, map[string]interface{}{"rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
 	unlockCh, fparams := rf.selectLockOrConvertToFollowerSig()
@@ -445,7 +447,6 @@ func (rf *Raft) beCandidate() (string, params) {
 	currentTerm := rf.CurrentTerm
 	rf.VotedFor = rf.Me
 	numVotes := 1
-	rf.electionTimer = makeRandomTimer()
 
 	rf.persist(true)
 

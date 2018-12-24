@@ -530,13 +530,8 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (strin
 	// Set up Follower
 	var unlockCh chan bool
 	if !isLockHeld {
-		dbg.LogKVs("Selecting lock or Convert To Follower signal", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"newTerm": newTerm, "rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
-		var fparams followerParams
-		unlockCh, fparams = rf.selectLockOrConvertToFollowerSig()
-		if unlockCh == nil {
-			dbg.LogKVs("Received Convert To Follower signal", []string{tagBeFollower, tagFollower, tagInactivity, tagSignal}, map[string]interface{}{"fparams": fparams, "newTerm": newTerm, "rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
-			return follower, params{follower: fparams}
-		}
+		dbg.LogKVs("Grabbing lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"newTerm": newTerm, "rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
+		rf.mu.Lock()
 	}
 
 	rf.State = follower
@@ -551,7 +546,7 @@ func (rf *Raft) beFollower(newTerm int, isLockHeld bool, ackCh chan bool) (strin
 
 	if !isLockHeld {
 		dbg.LogKVs("Returning lock", []string{tagBeFollower, tagFollower, tagLock}, map[string]interface{}{"rf": rf, "unlockCh": unlockCh})
-		unlockCh <- true
+		rf.mu.Unlock()
 	}
 
 	dbg.LogKVsIf(updatedTerm, "Entered Follower state in a new term", "Re-entered Follower state in same term", []string{tagBeFollower, tagFollower, tagInactivity}, map[string]interface{}{"isLockHeld": isLockHeld, "newTerm": newTerm, "rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})

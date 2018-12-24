@@ -59,6 +59,7 @@ const (
 	tagBeLeader        = "beLeader"
 	tagMake            = "Make"
 	tagRequestVote     = "RequestVote"
+	tagRun             = "run"
 	tagStart           = "Start"
 
 	// Categories
@@ -319,7 +320,7 @@ func (rf *Raft) Kill() {
 		dbg.Log("Returning lock", []string{tagKill, tagLock})
 		rf.mu.Unlock()
 	}()
-	dbg.LogKVs("Killing Raft server", []string{tagKill}, map[string]interface{}{"rf": rf})
+	dbg.LogKVs("Sending main kill signal", []string{tagKill, tagSignal}, map[string]interface{}{"rf": rf})
 	rf.killCh <- true
 }
 
@@ -420,6 +421,7 @@ func (rf *Raft) applyLogEntries(applyCh chan ApplyMsg, killCh chan bool) {
 		case <-timeout.C:
 			break
 		case <-killCh:
+			dbg.LogKVs("Received Apply Log Entries kill signal, killing", []string{tagApplyLogEntries, tagSignal}, map[string]interface{}{"rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
 			return
 		}
 	}
@@ -779,6 +781,8 @@ func (rf *Raft) run(applyCh chan ApplyMsg) {
 		// Check if server was killed
 		select {
 		case <-rf.killCh:
+			dbg.LogKVs("Received main kill signal, killing", []string{tagRun, tagSignal}, map[string]interface{}{"rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
+			dbg.LogKVs("Sending Apply Log Entries kill signal", []string{tagRun, tagSignal}, map[string]interface{}{"rf.CommitIndex": rf.CommitIndex, "rf.CurrentTerm": rf.CurrentTerm, "rf.Me": rf.Me, "rf.State": rf.State, "rf.VotedFor": rf.VotedFor})
 			killApplyLogEntriesCh <- true
 			return
 		default:
